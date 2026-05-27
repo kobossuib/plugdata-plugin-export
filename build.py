@@ -135,6 +135,16 @@ if errors:
 
 # ── Continue with the rest of the build ─────────────────────────────────────
 
+# Koboss patch: hide the "Plugin Info" (P) button by positioning it off-canvas
+_plugin_mode_h = Path("plugdata/Source/PluginMode.h")
+if _plugin_mode_h.exists():
+    _src = _plugin_mode_h.read_text()
+    _needle = 'editorButton->setBounds(getWidth() - titlebarHeight, 0, titlebarHeight, titlebarHeight);'
+    _new = 'editorButton->setBounds(-9999, -9999, 1, 1); // Koboss: hide info button'
+    if _needle in _src and _new not in _src:
+        _plugin_mode_h.write_text(_src.replace(_needle, _new))
+        print("Koboss patch: hid PluginMode info button")
+
 system = platform.system()
 if system == "Windows":
     cmake_compiler = ["-DCMAKE_C_COMPILER=cl", "-DCMAKE_CXX_COMPILER=cl"]
