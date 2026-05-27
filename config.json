@@ -6,7 +6,7 @@
     "patch": "chorus.pd",
     "formats": ["VST3", "AU"],
     "type": "fx",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "enable_gem": false,
     "enable_sfizz": false,
     "enable_ffmpeg": false

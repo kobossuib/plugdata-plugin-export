@@ -142,8 +142,15 @@ if _plugin_mode_h.exists():
     _needle = 'editorButton->setBounds(getWidth() - titlebarHeight, 0, titlebarHeight, titlebarHeight);'
     _new = 'editorButton->setBounds(-9999, -9999, 1, 1); // Koboss: hide info button'
     if _needle in _src and _new not in _src:
-        _plugin_mode_h.write_text(_src.replace(_needle, _new))
+        _src = _src.replace(_needle, _new)
         print("Koboss patch: hid PluginMode info button")
+    # Koboss patch: hide the centered patch title in the titlebar
+    _title_needle = 'g.drawText(cnv->patch.getTitle().upToLastOccurrenceOf(".pd", false, true), titleBar.getBounds(), Justification::centred);'
+    _title_new = '// Koboss: title hidden'
+    if _title_needle in _src and _title_new not in _src:
+        _src = _src.replace(_title_needle, _title_new)
+        print("Koboss patch: hid PluginMode title text")
+    _plugin_mode_h.write_text(_src)
 
 system = platform.system()
 if system == "Windows":
