@@ -140,7 +140,7 @@ if errors:
 # more-generic patches that would otherwise gobble up their needles.
 _plugin_mode_h = Path("plugdata/Source/PluginMode.h")
 if _plugin_mode_h.exists():
-    _src = _plugin_mode_h.read_text()
+    _src = _plugin_mode_h.read_text(encoding='utf-8')
 
     # 0a. Hide titleBar + cnv when chorus (rewrites resized()'s else branch — must run FIRST)
     _resized_hide_needle = '        } else {\n            float scale = getWidth() / width;\n            pluginModeScale = scale;\n            \n            scaleComboBox.setVisible(true);\n            editorButton->setVisible(true);\n\n            titleBar.setBounds(0, 0, getWidth(), titlebarHeight);\n            scaleComboBox.setBounds(8, 8, 74, titlebarHeight - 16);\n            editorButton->setBounds(getWidth() - titlebarHeight, 0, titlebarHeight, titlebarHeight);'
@@ -341,15 +341,15 @@ if _plugin_mode_h.exists():
         _src = _src.replace(_paint_early_needle, _paint_early_new, 1)
         print("Koboss patch: paint() early-returns for chorus")
 
-    _plugin_mode_h.write_text(_src)
+    _plugin_mode_h.write_text(_src, encoding='utf-8')
 
     # Ensure Fonts.h is included in PluginMode.h
     if '#include "Utility/Fonts.h"' not in _src:
-        _src = _plugin_mode_h.read_text()
+        _src = _plugin_mode_h.read_text(encoding='utf-8')
         _src = _src.replace('#include "PluginEditor.h"',
                             '#include "PluginEditor.h"\n#include "Utility/Fonts.h"',
                             1)
-        _plugin_mode_h.write_text(_src)
+        _plugin_mode_h.write_text(_src, encoding='utf-8')
         print("Koboss patch: included Fonts.h in PluginMode.h")
 
 system = platform.system()
