@@ -195,11 +195,31 @@ if _plugin_mode_h.exists():
         _src = _src.replace(_mousedown_needle, _mousedown_new, 1)
         print("Koboss patch: hooked mouseDown")
 
+    # 5b. Hook handleKobossDrag into existing mouseDrag
+    _mousedrag_needle = 'void mouseDrag(MouseEvent const& e) override\n    {\n        if (!isDraggingWindow)\n            return;'
+    _mousedrag_new = 'void mouseDrag(MouseEvent const& e) override\n    {\n        if (handleKobossDrag(e)) return;\n        if (!isDraggingWindow)\n            return;'
+    if _mousedrag_needle in _src and "handleKobossDrag(e)" not in _src:
+        _src = _src.replace(_mousedrag_needle, _mousedrag_new, 1)
+        print("Koboss patch: hooked mouseDrag")
+
+    # 5c. Hook handleKobossUp into existing mouseUp
+    _mouseup_needle = 'void mouseUp(MouseEvent const& e) override\n    {\n        isDraggingWindow = false;\n    }'
+    _mouseup_new = 'void mouseUp(MouseEvent const& e) override\n    {\n        kobossKnobDragging = -1;\n        isDraggingWindow = false;\n    }'
+    if _mouseup_needle in _src and "kobossKnobDragging = -1" not in _src:
+        _src = _src.replace(_mouseup_needle, _mouseup_new, 1)
+        print("Koboss patch: hooked mouseUp")
+
     # 6. Inject custom UI methods before paint() definition
     _custom_ui_marker = "// Koboss Chorus custom UI"
     if _custom_ui_marker not in _src:
         _custom_ui_block = '''    // Koboss Chorus custom UI (NVG drawing)
     int kobossActivePreset = 0;
+    bool kobossInSettings = false;
+    float kobossOutWet = 1.0f;
+    float kobossOutGain = 0.5f;
+    int kobossKnobDragging = -1;
+    int kobossDragStartY = 0;
+    float kobossDragStartValue = 0.0f;
 
     bool isKobossChorus() const { return true; }
 
@@ -218,8 +238,122 @@ if _plugin_mode_h.exists():
         return -1;
     }
 
+    juce::Rectangle<int> kobossIconBounds() const {
+        return juce::Rectangle<int>(getWidth() - 32, 8, 24, 24);
+    }
+
+    juce::Point<float> kobossKnobCenter(int idx) const {
+        float const W = (float)getWidth();
+        return juce::Point<float>(idx == 0 ? W * 0.30f : W * 0.70f, 95.0f);
+    }
+    static constexpr float kobossKnobRadius = 28.0f;
+
+    int kobossKnobAt(juce::Point<int> p) const {
+        for (int i = 0; i < 2; ++i) {
+            auto c = kobossKnobCenter(i);
+            float dx = (float)p.x - c.x;
+            float dy = (float)p.y - c.y;
+            if (dx*dx + dy*dy <= (kobossKnobRadius + 4) * (kobossKnobRadius + 4)) return i;
+        }
+        return -1;
+    }
+
     static NVGcolor nvgHex(uint32_t rgb, float a = 1.0f) {
         return nvgRGBA((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, (unsigned char)(a * 255.0f));
+    }
+
+    void renderKobossIcon(NVGcontext* nvg) {
+        auto r = kobossIconBounds();
+        float cx = (float)r.getCentreX();
+        float cy = (float)r.getCentreY();
+        nvgFillColor(nvg, nvgHex(0x8a8a8a));
+        nvgStrokeColor(nvg, nvgHex(0x8a8a8a));
+        nvgStrokeWidth(nvg, 1.4f);
+        if (kobossInSettings) {
+            // close X
+            nvgBeginPath(nvg);
+            nvgMoveTo(nvg, cx - 4.5f, cy - 4.5f);
+            nvgLineTo(nvg, cx + 4.5f, cy + 4.5f);
+            nvgMoveTo(nvg, cx + 4.5f, cy - 4.5f);
+            nvgLineTo(nvg, cx - 4.5f, cy + 4.5f);
+            nvgStroke(nvg);
+        } else {
+            // three dots
+            for (int i = 0; i < 3; ++i) {
+                nvgBeginPath(nvg);
+                nvgCircle(nvg, cx - 6.0f + (float)i * 6.0f, cy, 1.5f);
+                nvgFill(nvg);
+            }
+        }
+    }
+
+    void renderKobossHeader(NVGcontext* nvg) {
+        nvgFontFace(nvg, "Inter-Bold");
+        nvgFontSize(nvg, 14.0f);
+        nvgTextAlign(nvg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+        nvgFillColor(nvg, nvgHex(0x1a1a1a));
+        nvgText(nvg, 22, 14, "KOBOSS", nullptr);
+
+        float bounds[4];
+        nvgTextBounds(nvg, 22, 14, "KOBOSS", nullptr, bounds);
+        nvgFontFace(nvg, "Inter-Regular");
+        nvgFontSize(nvg, 10.5f);
+        nvgFillColor(nvg, nvgHex(0x8a8a8a));
+        nvgText(nvg, bounds[2] + 8, 17, "CHORUS", nullptr);
+    }
+
+    void renderKobossFooter(NVGcontext* nvg) {
+        float const W = (float)getWidth();
+        float const H = (float)getHeight();
+        nvgFontFace(nvg, "Inter-Regular");
+        nvgFontSize(nvg, 9.0f);
+        nvgFillColor(nvg, nvgHex(0x8a8a8a));
+        nvgTextAlign(nvg, NVG_ALIGN_LEFT | NVG_ALIGN_BOTTOM);
+        nvgText(nvg, 22, H - 12, "KOBOSSBEATS.COM", nullptr);
+        nvgTextAlign(nvg, NVG_ALIGN_RIGHT | NVG_ALIGN_BOTTOM);
+        nvgText(nvg, W - 22, H - 12, "v0.2.0", nullptr);
+    }
+
+    void renderKobossKnob(NVGcontext* nvg, float cx, float cy, float value,
+                          const char* label, const char* valueStr) {
+        // outer ring background
+        nvgBeginPath(nvg);
+        nvgCircle(nvg, cx, cy, kobossKnobRadius);
+        nvgStrokeColor(nvg, nvgHex(0xe5e5e5));
+        nvgStrokeWidth(nvg, 1.0f);
+        nvgStroke(nvg);
+
+        // value arc — 270° sweep from -135° (bottom-left) clockwise
+        float const PI = 3.14159265f;
+        float startAngle = PI * 0.75f;     // 135° (bottom-left in screen coords)
+        float endAngle   = startAngle + value * (PI * 1.5f); // up to top-right
+        nvgBeginPath(nvg);
+        nvgArc(nvg, cx, cy, kobossKnobRadius - 2.0f, startAngle, endAngle, NVG_CW);
+        nvgStrokeColor(nvg, nvgHex(0x1a1a1a));
+        nvgStrokeWidth(nvg, 2.5f);
+        nvgStroke(nvg);
+
+        // indicator tick at end angle
+        float ix = cx + std::cos(endAngle) * (kobossKnobRadius - 8.0f);
+        float iy = cy + std::sin(endAngle) * (kobossKnobRadius - 8.0f);
+        nvgBeginPath(nvg);
+        nvgCircle(nvg, ix, iy, 2.5f);
+        nvgFillColor(nvg, nvgHex(0xff6a3d));
+        nvgFill(nvg);
+
+        // value text inside
+        nvgFontFace(nvg, "Inter-Bold");
+        nvgFontSize(nvg, 11.0f);
+        nvgFillColor(nvg, nvgHex(0x1a1a1a));
+        nvgTextAlign(nvg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+        nvgText(nvg, cx, cy, valueStr, nullptr);
+
+        // label below knob
+        nvgFontFace(nvg, "Inter-SemiBold");
+        nvgFontSize(nvg, 9.0f);
+        nvgFillColor(nvg, nvgHex(0x8a8a8a));
+        nvgTextAlign(nvg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+        nvgText(nvg, cx, cy + kobossKnobRadius + 8.0f, label, nullptr);
     }
 
     void renderKobossChorus(NVGcontext* nvg) {
@@ -232,106 +366,125 @@ if _plugin_mode_h.exists():
         nvgFillColor(nvg, nvgHex(0xfafaf7));
         nvgFill(nvg);
 
-        // Header: KOBOSS (bold) + CHORUS (regular grey)
-        nvgFontFace(nvg, "Inter-Bold");
-        nvgFontSize(nvg, 14.0f);
-        nvgTextAlign(nvg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
-        nvgFillColor(nvg, nvgHex(0x1a1a1a));
-        nvgText(nvg, 22, 14, "KOBOSS", nullptr);
+        renderKobossHeader(nvg);
+        renderKobossIcon(nvg);
 
-        // Measure KOBOSS to position CHORUS right after it
-        float bounds[4];
-        nvgTextBounds(nvg, 22, 14, "KOBOSS", nullptr, bounds);
-        float chorusX = bounds[2] + 8;
+        if (kobossInSettings) {
+            // SETTINGS PAGE: two knobs
+            char wetBuf[16];
+            std::snprintf(wetBuf, sizeof(wetBuf), "%d%%", (int)std::round(kobossOutWet * 100.0f));
+            auto cWet = kobossKnobCenter(0);
+            renderKobossKnob(nvg, cWet.x, cWet.y, kobossOutWet, "WET", wetBuf);
 
-        nvgFontFace(nvg, "Inter-Regular");
-        nvgFontSize(nvg, 10.5f);
-        nvgFillColor(nvg, nvgHex(0x8a8a8a));
-        nvgText(nvg, chorusX, 17, "CHORUS", nullptr);
-
-        // Version (top right)
-        nvgTextAlign(nvg, NVG_ALIGN_RIGHT | NVG_ALIGN_TOP);
-        nvgFontFace(nvg, "Inter-Regular");
-        nvgFontSize(nvg, 10.0f);
-        nvgFillColor(nvg, nvgHex(0x8a8a8a));
-        nvgText(nvg, W - 22, 17, "v0.2.0", nullptr);
-
-        // 3 preset buttons
-        const char* numbers[] = { "01", "02", "03" };
-        const char* labels[]  = { "SUBTLE", "CLASSIC", "WARM" };
-
-        for (int i = 0; i < 3; ++i) {
-            auto const btn = kobossButton(i);
-            bool const active = (kobossActivePreset == i);
-
-            // Button background or border
-            nvgBeginPath(nvg);
-            nvgRoundedRect(nvg, btn.getX(), btn.getY(), btn.getWidth(), btn.getHeight(), 4.0f);
-            if (active) {
-                nvgFillColor(nvg, nvgHex(0x1a1a1a));
-                nvgFill(nvg);
+            // gain knob — value 0..1 maps to 0..2x linear (0.5 = unity = 0 dB)
+            char gainBuf[16];
+            float linear = kobossOutGain * 2.0f;
+            if (linear < 0.001f) {
+                std::snprintf(gainBuf, sizeof(gainBuf), "-inf");
             } else {
-                nvgStrokeColor(nvg, nvgHex(0xbababa));
-                nvgStrokeWidth(nvg, 1.0f);
-                nvgStroke(nvg);
+                float dB = 20.0f * std::log10(linear);
+                std::snprintf(gainBuf, sizeof(gainBuf), "%+.1f", dB);
             }
-
-            // Number inside
-            nvgFontFace(nvg, "Inter-Bold");
-            nvgFontSize(nvg, 16.0f);
-            nvgTextAlign(nvg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-            nvgFillColor(nvg, active ? nvgHex(0xfafaf7) : nvgHex(0x1a1a1a));
-            nvgText(nvg, btn.getCentreX(), btn.getCentreY(), numbers[i], nullptr);
-
-            // Dot — naranja con halo, solo activo
-            if (active) {
-                float dotCx = btn.getRight() - 9.0f;
-                float dotCy = btn.getY() + 9.0f;
-                // halo outer
+            auto cGain = kobossKnobCenter(1);
+            renderKobossKnob(nvg, cGain.x, cGain.y, kobossOutGain, "GAIN  dB", gainBuf);
+        } else {
+            // PRESETS PAGE
+            const char* numbers[] = { "01", "02", "03" };
+            const char* labels[]  = { "SUBTLE", "CLASSIC", "WARM" };
+            for (int i = 0; i < 3; ++i) {
+                auto const btn = kobossButton(i);
+                bool const active = (kobossActivePreset == i);
                 nvgBeginPath(nvg);
-                nvgCircle(nvg, dotCx, dotCy, 6.0f);
-                nvgFillColor(nvg, nvgHex(0xff6a3d, 0.20f));
-                nvgFill(nvg);
-                // halo inner
-                nvgBeginPath(nvg);
-                nvgCircle(nvg, dotCx, dotCy, 4.0f);
-                nvgFillColor(nvg, nvgHex(0xff6a3d, 0.40f));
-                nvgFill(nvg);
-                // core
-                nvgBeginPath(nvg);
-                nvgCircle(nvg, dotCx, dotCy, 2.5f);
-                nvgFillColor(nvg, nvgHex(0xff6a3d));
-                nvgFill(nvg);
+                nvgRoundedRect(nvg, btn.getX(), btn.getY(), btn.getWidth(), btn.getHeight(), 4.0f);
+                if (active) {
+                    nvgFillColor(nvg, nvgHex(0x1a1a1a));
+                    nvgFill(nvg);
+                } else {
+                    nvgStrokeColor(nvg, nvgHex(0xbababa));
+                    nvgStrokeWidth(nvg, 1.0f);
+                    nvgStroke(nvg);
+                }
+                nvgFontFace(nvg, "Inter-Bold");
+                nvgFontSize(nvg, 16.0f);
+                nvgTextAlign(nvg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+                nvgFillColor(nvg, active ? nvgHex(0xfafaf7) : nvgHex(0x1a1a1a));
+                nvgText(nvg, btn.getCentreX(), btn.getCentreY(), numbers[i], nullptr);
+                if (active) {
+                    float dotCx = btn.getRight() - 9.0f;
+                    float dotCy = btn.getY() + 9.0f;
+                    nvgBeginPath(nvg);
+                    nvgCircle(nvg, dotCx, dotCy, 6.0f);
+                    nvgFillColor(nvg, nvgHex(0xff6a3d, 0.20f));
+                    nvgFill(nvg);
+                    nvgBeginPath(nvg);
+                    nvgCircle(nvg, dotCx, dotCy, 4.0f);
+                    nvgFillColor(nvg, nvgHex(0xff6a3d, 0.40f));
+                    nvgFill(nvg);
+                    nvgBeginPath(nvg);
+                    nvgCircle(nvg, dotCx, dotCy, 2.5f);
+                    nvgFillColor(nvg, nvgHex(0xff6a3d));
+                    nvgFill(nvg);
+                }
+                nvgFontFace(nvg, "Inter-SemiBold");
+                nvgFontSize(nvg, 9.0f);
+                nvgTextAlign(nvg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+                nvgFillColor(nvg, active ? nvgHex(0x1a1a1a) : nvgHex(0x8a8a8a));
+                nvgText(nvg, btn.getCentreX(), btn.getBottom() + 8, labels[i], nullptr);
             }
-
-            // Sub-label below
-            nvgFontFace(nvg, "Inter-SemiBold");
-            nvgFontSize(nvg, 9.0f);
-            nvgTextAlign(nvg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-            nvgFillColor(nvg, active ? nvgHex(0x1a1a1a) : nvgHex(0x8a8a8a));
-            nvgText(nvg, btn.getCentreX(), btn.getBottom() + 8, labels[i], nullptr);
         }
 
-        // Footer
-        nvgFontFace(nvg, "Inter-Regular");
-        nvgFontSize(nvg, 9.0f);
-        nvgFillColor(nvg, nvgHex(0x8a8a8a));
-        nvgTextAlign(nvg, NVG_ALIGN_LEFT | NVG_ALIGN_BOTTOM);
-        nvgText(nvg, 22, H - 12, "KOBOSSBEATS.COM", nullptr);
-        nvgTextAlign(nvg, NVG_ALIGN_RIGHT | NVG_ALIGN_BOTTOM);
-        nvgText(nvg, W - 22, H - 12, "FOR STEREO", nullptr);
+        renderKobossFooter(nvg);
     }
 
     bool handleKobossClick(juce::MouseEvent const& e) {
         if (!isKobossChorus()) return false;
-        int const p = kobossPresetAt(e.getPosition());
-        if (p >= 0 && p != kobossActivePreset) {
-            kobossActivePreset = p;
-            if (editor != nullptr && editor->pd != nullptr) {
-                editor->pd->sendFloat("preset", static_cast<float>(p));
-            }
+        auto const p = e.getPosition();
+
+        // icon (toggle settings)
+        if (kobossIconBounds().contains(p)) {
+            kobossInSettings = !kobossInSettings;
             if (editor != nullptr) editor->nvgSurface.invalidateAll();
+            return true;
         }
+
+        if (kobossInSettings) {
+            int const k = kobossKnobAt(p);
+            if (k >= 0) {
+                kobossKnobDragging = k;
+                kobossDragStartY = p.y;
+                kobossDragStartValue = (k == 0) ? kobossOutWet : kobossOutGain;
+                return true;
+            }
+        } else {
+            int const idx = kobossPresetAt(p);
+            if (idx >= 0 && idx != kobossActivePreset) {
+                kobossActivePreset = idx;
+                if (editor != nullptr && editor->pd != nullptr) {
+                    editor->pd->sendFloat("preset", static_cast<float>(idx));
+                }
+                if (editor != nullptr) editor->nvgSurface.invalidateAll();
+            }
+            return true;
+        }
+        return true;
+    }
+
+    bool handleKobossDrag(juce::MouseEvent const& e) {
+        if (kobossKnobDragging < 0) return false;
+        int const deltaY = kobossDragStartY - e.getPosition().y;
+        float newVal = juce::jlimit(0.0f, 1.0f, kobossDragStartValue + (float)deltaY / 150.0f);
+        const char* sendName = nullptr;
+        if (kobossKnobDragging == 0) {
+            kobossOutWet = newVal;
+            sendName = "out_wet";
+        } else {
+            kobossOutGain = newVal;
+            sendName = "out_gain";
+        }
+        if (editor != nullptr && editor->pd != nullptr) {
+            editor->pd->sendFloat(sendName, newVal);
+        }
+        if (editor != nullptr) editor->nvgSurface.invalidateAll();
         return true;
     }
 
