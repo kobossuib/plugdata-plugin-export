@@ -135,22 +135,222 @@ if errors:
 
 # ── Continue with the rest of the build ─────────────────────────────────────
 
-# Koboss patch: hide the "Plugin Info" (P) button by positioning it off-canvas
+# Koboss patches to PluginMode.h
+# IMPORTANT order: more-specific patches (with longer context) must run BEFORE
+# more-generic patches that would otherwise gobble up their needles.
 _plugin_mode_h = Path("plugdata/Source/PluginMode.h")
 if _plugin_mode_h.exists():
     _src = _plugin_mode_h.read_text()
+
+    # 0a. Hide titleBar + cnv when chorus (rewrites resized()'s else branch — must run FIRST)
+    _resized_hide_needle = '        } else {\n            float scale = getWidth() / width;\n            pluginModeScale = scale;\n            \n            scaleComboBox.setVisible(true);\n            editorButton->setVisible(true);\n\n            titleBar.setBounds(0, 0, getWidth(), titlebarHeight);\n            scaleComboBox.setBounds(8, 8, 74, titlebarHeight - 16);\n            editorButton->setBounds(getWidth() - titlebarHeight, 0, titlebarHeight, titlebarHeight);'
+    _resized_hide_new = '''        } else if (isKobossChorus()) {
+            // Koboss: hide titleBar and canvas — custom paint does everything
+            pluginModeScale = 1.0f;
+            titleBar.setBounds(0, 0, 0, 0);
+            scaleComboBox.setVisible(false);
+            editorButton->setVisible(false);
+            cnv->setBounds(-9999, -9999, 1, 1);
+        } else {
+            float scale = getWidth() / width;
+            pluginModeScale = scale;
+
+            scaleComboBox.setVisible(true);
+            editorButton->setVisible(true);
+
+            titleBar.setBounds(0, 0, getWidth(), titlebarHeight);
+            scaleComboBox.setBounds(8, 8, 74, titlebarHeight - 16);
+            editorButton->setBounds(getWidth() - titlebarHeight, 0, titlebarHeight, titlebarHeight);'''
+    if _resized_hide_needle in _src and "Koboss: hide titleBar and canvas" not in _src:
+        _src = _src.replace(_resized_hide_needle, _resized_hide_new, 1)
+        print("Koboss patch: resized() hides titleBar and canvas for chorus")
+
+    # 1. Hide the "Plugin Info" (P) button (replaces remaining editorButton lines)
     _needle = 'editorButton->setBounds(getWidth() - titlebarHeight, 0, titlebarHeight, titlebarHeight);'
     _new = 'editorButton->setBounds(-9999, -9999, 1, 1); // Koboss: hide info button'
     if _needle in _src and _new not in _src:
         _src = _src.replace(_needle, _new)
         print("Koboss patch: hid PluginMode info button")
-    # Koboss patch: hide the centered patch title in the titlebar
+
+    # 2. Hide centered patch title text
     _title_needle = 'g.drawText(cnv->patch.getTitle().upToLastOccurrenceOf(".pd", false, true), titleBar.getBounds(), Justification::centred);'
     _title_new = '// Koboss: title hidden'
     if _title_needle in _src and _title_new not in _src:
         _src = _src.replace(_title_needle, _title_new)
         print("Koboss patch: hid PluginMode title text")
+
+    # 3. Inject custom Koboss Chorus UI (paint + mouseDown) before paint() definition
+    _custom_ui_marker = "// Koboss Chorus custom UI"
+    if _custom_ui_marker not in _src:
+        _custom_ui_block = '''    // Koboss Chorus custom UI ─────────────────────────────────────────────────
+    int kobossActivePreset = 0;
+
+    bool isKobossChorus() const {
+        if (!cnv) return false;
+        auto const name = cnv->patch.getTitle().upToLastOccurrenceOf(".pd", false, true);
+        return name == "chorus" || name == "Koboss Chorus";
+    }
+
+    juce::Rectangle<float> kobossButton(int idx) const {
+        constexpr int cellSize = 44;
+        constexpr int gap = 6;
+        constexpr int totalW = 3 * cellSize + 2 * gap;
+        int const startX = (getWidth() - totalW) / 2;
+        int const btnY = 50;
+        return juce::Rectangle<float>(static_cast<float>(startX + idx * (cellSize + gap)),
+                                      static_cast<float>(btnY),
+                                      static_cast<float>(cellSize),
+                                      static_cast<float>(cellSize));
+    }
+
+    int kobossPresetAt(juce::Point<int> p) const {
+        for (int i = 0; i < 3; ++i)
+            if (kobossButton(i).contains(p.toFloat())) return i;
+        return -1;
+    }
+
+    void paintKobossChorus(Graphics& g) {
+        using juce::Colour;
+        using juce::Justification;
+        using juce::Rectangle;
+
+        auto const W = static_cast<float>(getWidth());
+        auto const H = static_cast<float>(getHeight());
+
+        auto const bgColor = Colour(0xfffafaf7);
+        auto const fgColor = Colour(0xff1a1a1a);
+        auto const subColor = Colour(0xff8a8a8a);
+        auto const dimColor = Colour(0xffbababa);
+        auto const accentColor = Colour(0xffff6a3d);
+
+        // Background
+        g.fillAll(bgColor);
+
+        // Header: KOBOSS (bold) + CHORUS (light grey)
+        g.setColour(fgColor);
+        g.setFont(Fonts::getBoldFont().withHeight(14.0f).withExtraKerningFactor(0.04f));
+        g.drawText("KOBOSS", 22, 14, 80, 18, Justification::topLeft, false);
+
+        g.setColour(subColor);
+        g.setFont(Fonts::getDefaultFont().withHeight(9.5f).withExtraKerningFactor(0.20f));
+        g.drawText("CHORUS", 80, 17, 60, 14, Justification::topLeft, false);
+
+        // Version (top right, monospace, grey)
+        g.setColour(subColor);
+        g.setFont(Fonts::getMonospaceFont().withHeight(9.0f).withExtraKerningFactor(0.05f));
+        g.drawText(JUCE_STRINGIFY(CUSTOM_PLUGIN_VERSION), (int)W - 70, 17, 48, 14, Justification::topRight, false);
+
+        // 3 preset buttons
+        constexpr float cornerRadius = 4.0f;
+        constexpr float borderThickness = 1.5f;
+        char const* numbers[] = { "01", "02", "03" };
+        char const* labels[]  = { "SUBTLE", "CLASSIC", "WARM" };
+
+        for (int i = 0; i < 3; ++i) {
+            auto const btn = kobossButton(i);
+            bool const active = (kobossActivePreset == i);
+
+            // Fill or border
+            if (active) {
+                g.setColour(fgColor);
+                g.fillRoundedRectangle(btn, cornerRadius);
+            } else {
+                g.setColour(dimColor);
+                g.drawRoundedRectangle(btn, cornerRadius, 1.0f);
+            }
+
+            // Border (active also gets stronger border)
+            if (active) {
+                g.setColour(fgColor);
+                g.drawRoundedRectangle(btn, cornerRadius, borderThickness);
+            }
+
+            // Number inside button (centered)
+            g.setColour(active ? bgColor : fgColor);
+            g.setFont(Fonts::getBoldFont().withHeight(15.0f).withExtraKerningFactor(0.02f));
+            g.drawText(numbers[i],
+                       (int)btn.getX(), (int)btn.getY(),
+                       (int)btn.getWidth(), (int)btn.getHeight(),
+                       Justification::centred, false);
+
+            // Dot — naranja con halo, solo en el activo
+            if (active) {
+                float const dotCx = btn.getRight() - 9.0f;
+                float const dotCy = btn.getY() + 9.0f;
+                // Halo
+                g.setColour(accentColor.withAlpha(0.25f));
+                g.fillEllipse(dotCx - 6.0f, dotCy - 6.0f, 12.0f, 12.0f);
+                g.setColour(accentColor.withAlpha(0.45f));
+                g.fillEllipse(dotCx - 4.5f, dotCy - 4.5f, 9.0f, 9.0f);
+                // Core
+                g.setColour(accentColor);
+                g.fillEllipse(dotCx - 2.5f, dotCy - 2.5f, 5.0f, 5.0f);
+            }
+
+            // Sub-label below button (SUBTLE / CLASSIC / WARM)
+            g.setColour(active ? fgColor.withAlpha(0.85f) : subColor);
+            g.setFont(Fonts::getSemiBoldFont().withHeight(8.5f).withExtraKerningFactor(0.18f));
+            g.drawText(labels[i],
+                       (int)btn.getX() - 10,
+                       (int)btn.getBottom() + 8,
+                       (int)btn.getWidth() + 20,
+                       12,
+                       Justification::centred, false);
+        }
+
+        // Footer
+        g.setColour(subColor);
+        g.setFont(Fonts::getMonospaceFont().withHeight(8.5f).withExtraKerningFactor(0.10f));
+        g.drawText("KOBOSSBEATS.COM", 22, (int)H - 18, 150, 12, Justification::topLeft, false);
+        g.drawText("FOR STEREO", (int)W - 100, (int)H - 18, 78, 12, Justification::topRight, false);
+    }
+
+    void mouseDown(juce::MouseEvent const& e) override {
+        if (isKobossChorus()) {
+            int const p = kobossPresetAt(e.getPosition());
+            if (p >= 0 && p != kobossActivePreset) {
+                kobossActivePreset = p;
+                editor->pd->sendFloat("preset", static_cast<float>(p));
+                repaint();
+                return;
+            }
+        }
+        Component::mouseDown(e);
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+
+    '''
+        # Insert before the first paint(Graphics& g) method
+        _paint_marker = '    void paint(Graphics& g) override\n    {'
+        if _paint_marker in _src:
+            _src = _src.replace(_paint_marker, _custom_ui_block + _paint_marker, 1)
+            print("Koboss patch: inserted custom Chorus UI methods")
+
+    # 4. Make paint() early-return into paintKobossChorus when patch is chorus
+    _paint_early_needle = '    void paint(Graphics& g) override\n    {\n        if (!cnv)\n            return;'
+    _paint_early_new = '''    void paint(Graphics& g) override
+    {
+        if (isKobossChorus()) {
+            paintKobossChorus(g);
+            return;
+        }
+        if (!cnv)
+            return;'''
+    if _paint_early_needle in _src and "if (isKobossChorus())" not in _src.split("void paint(Graphics& g) override\n    {", 1)[1].split("void paint", 1)[0]:
+        # Avoid double-insert if already patched
+        _src = _src.replace(_paint_early_needle, _paint_early_new, 1)
+        print("Koboss patch: paint() early-returns for chorus")
+
     _plugin_mode_h.write_text(_src)
+
+    # Ensure Fonts.h is included in PluginMode.h
+    if '#include "Utility/Fonts.h"' not in _src:
+        _src = _plugin_mode_h.read_text()
+        _src = _src.replace('#include "PluginEditor.h"',
+                            '#include "PluginEditor.h"\n#include "Utility/Fonts.h"',
+                            1)
+        _plugin_mode_h.write_text(_src)
+        print("Koboss patch: included Fonts.h in PluginMode.h")
 
 system = platform.system()
 if system == "Windows":
