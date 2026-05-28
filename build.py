@@ -147,10 +147,10 @@ if _plugin_mode_h.exists():
     _resized_hide_new = '''        } else if (isKobossChorus()) {
             // Koboss: hide titleBar and canvas — custom paint does everything
             pluginModeScale = 1.0f;
-            titleBar.setBounds(0, 0, 0, 0);
+            titleBar.setVisible(false);
             scaleComboBox.setVisible(false);
             editorButton->setVisible(false);
-            cnv->setBounds(-9999, -9999, 1, 1);
+            cnv->setVisible(false);
         } else {
             float scale = getWidth() / width;
             pluginModeScale = scale;
@@ -234,21 +234,19 @@ if _plugin_mode_h.exists():
 
         // Header: KOBOSS (bold) + CHORUS (light grey)
         g.setColour(fgColor);
-        g.setFont(Fonts::getBoldFont().withHeight(14.0f).withExtraKerningFactor(0.04f));
+        g.setFont(Fonts::getBoldFont().withHeight(14.0f));
         g.drawText("KOBOSS", 22, 14, 80, 18, Justification::topLeft, false);
 
         g.setColour(subColor);
-        g.setFont(Fonts::getDefaultFont().withHeight(9.5f).withExtraKerningFactor(0.20f));
+        g.setFont(Fonts::getDefaultFont().withHeight(10.0f));
         g.drawText("CHORUS", 80, 17, 60, 14, Justification::topLeft, false);
 
-        // Version (top right, monospace, grey)
+        // Version (top right)
         g.setColour(subColor);
-        g.setFont(Fonts::getMonospaceFont().withHeight(9.0f).withExtraKerningFactor(0.05f));
+        g.setFont(Fonts::getDefaultFont().withHeight(10.0f));
         g.drawText("v0.2.0", (int)W - 70, 17, 48, 14, Justification::topRight, false);
 
         // 3 preset buttons
-        constexpr float cornerRadius = 4.0f;
-        constexpr float borderThickness = 1.5f;
         char const* numbers[] = { "01", "02", "03" };
         char const* labels[]  = { "SUBTLE", "CLASSIC", "WARM" };
 
@@ -256,46 +254,31 @@ if _plugin_mode_h.exists():
             auto const btn = kobossButton(i);
             bool const active = (kobossActivePreset == i);
 
-            // Fill or border
             if (active) {
                 g.setColour(fgColor);
-                g.fillRoundedRectangle(btn, cornerRadius);
+                g.fillRoundedRectangle(btn, 4.0f);
             } else {
                 g.setColour(dimColor);
-                g.drawRoundedRectangle(btn, cornerRadius, 1.0f);
+                g.drawRoundedRectangle(btn, 4.0f, 1.0f);
             }
 
-            // Border (active also gets stronger border)
-            if (active) {
-                g.setColour(fgColor);
-                g.drawRoundedRectangle(btn, cornerRadius, borderThickness);
-            }
-
-            // Number inside button (centered)
+            // Number inside button
             g.setColour(active ? bgColor : fgColor);
-            g.setFont(Fonts::getBoldFont().withHeight(15.0f).withExtraKerningFactor(0.02f));
+            g.setFont(Fonts::getBoldFont().withHeight(15.0f));
             g.drawText(numbers[i],
                        (int)btn.getX(), (int)btn.getY(),
                        (int)btn.getWidth(), (int)btn.getHeight(),
                        Justification::centred, false);
 
-            // Dot — naranja con halo, solo en el activo
+            // Dot only on active
             if (active) {
-                float const dotCx = btn.getRight() - 9.0f;
-                float const dotCy = btn.getY() + 9.0f;
-                // Halo
-                g.setColour(accentColor.withAlpha(0.25f));
-                g.fillEllipse(dotCx - 6.0f, dotCy - 6.0f, 12.0f, 12.0f);
-                g.setColour(accentColor.withAlpha(0.45f));
-                g.fillEllipse(dotCx - 4.5f, dotCy - 4.5f, 9.0f, 9.0f);
-                // Core
                 g.setColour(accentColor);
-                g.fillEllipse(dotCx - 2.5f, dotCy - 2.5f, 5.0f, 5.0f);
+                g.fillEllipse(btn.getRight() - 11.0f, btn.getY() + 5.0f, 6.0f, 6.0f);
             }
 
-            // Sub-label below button (SUBTLE / CLASSIC / WARM)
-            g.setColour(active ? fgColor.withAlpha(0.85f) : subColor);
-            g.setFont(Fonts::getSemiBoldFont().withHeight(8.5f).withExtraKerningFactor(0.18f));
+            // Sub-label below button
+            g.setColour(active ? fgColor : subColor);
+            g.setFont(Fonts::getSemiBoldFont().withHeight(9.0f));
             g.drawText(labels[i],
                        (int)btn.getX() - 10,
                        (int)btn.getBottom() + 8,
@@ -306,7 +289,7 @@ if _plugin_mode_h.exists():
 
         // Footer
         g.setColour(subColor);
-        g.setFont(Fonts::getMonospaceFont().withHeight(8.5f).withExtraKerningFactor(0.10f));
+        g.setFont(Fonts::getDefaultFont().withHeight(9.0f));
         g.drawText("KOBOSSBEATS.COM", 22, (int)H - 18, 150, 12, Justification::topLeft, false);
         g.drawText("FOR STEREO", (int)W - 100, (int)H - 18, 78, 12, Justification::topRight, false);
     }
@@ -316,7 +299,9 @@ if _plugin_mode_h.exists():
         int const p = kobossPresetAt(e.getPosition());
         if (p >= 0 && p != kobossActivePreset) {
             kobossActivePreset = p;
-            editor->pd->sendFloat("preset", static_cast<float>(p));
+            if (editor != nullptr && editor->pd != nullptr) {
+                editor->pd->sendFloat("preset", static_cast<float>(p));
+            }
             repaint();
         }
         return true; // swallow click in chorus mode
