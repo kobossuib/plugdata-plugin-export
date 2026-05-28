@@ -340,7 +340,26 @@ if _plugin_mode_h.exists():
 
     _plugin_mode_h.write_text(_src, encoding='utf-8')
 
-    # 7. Ensure Fonts.h is included (used elsewhere too — keep for safety)
+    # 6b. Don't reserve titlebar height in plugin window size (so editor matches patch dimensions)
+    _size_needle = 'auto newHeight = static_cast<int>(height * scale) + titlebarHeight + nativeTitleBarHeight;'
+    _size_new = 'auto newHeight = static_cast<int>(height * scale) + (isKobossChorus() ? 0 : titlebarHeight) + nativeTitleBarHeight;'
+    if _size_needle in _src and "isKobossChorus() ? 0 : titlebarHeight" not in _src:
+        _src = _src.replace(_size_needle, _size_new, 1)
+        _plugin_mode_h.write_text(_src, encoding='utf-8')
+        print("Koboss patch: removed titlebar reservation in chorus size")
+
+    # 7. Make nvgSurface cover the FULL editor (no 40px gap reserved for plugdata toolbar)
+    _editor_cpp = Path("plugdata/Source/PluginEditor.cpp")
+    if _editor_cpp.exists():
+        _ecpp = _editor_cpp.read_text(encoding='utf-8')
+        _bounds_needle = 'nvgSurface.updateBounds(getLocalBounds().withTrimmedTop(pluginMode->isWindowFullscreen() ? 0 : 40));'
+        _bounds_new = 'nvgSurface.updateBounds(getLocalBounds()); // Koboss: full editor, no toolbar gap'
+        if _bounds_needle in _ecpp and "Koboss: full editor" not in _ecpp:
+            _ecpp = _ecpp.replace(_bounds_needle, _bounds_new, 1)
+            _editor_cpp.write_text(_ecpp, encoding='utf-8')
+            print("Koboss patch: nvgSurface covers full editor (no toolbar gap)")
+
+    # 8. Ensure Fonts.h is included (used elsewhere too — keep for safety)
     if '#include "Utility/Fonts.h"' not in _src:
         _src = _plugin_mode_h.read_text(encoding='utf-8')
         _src = _src.replace('#include "PluginEditor.h"',
