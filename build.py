@@ -150,6 +150,9 @@ if _plugin_mode_h.exists():
             scaleComboBox.setVisible(false);
             editorButton->setVisible(false);
             cnv->setVisible(false);
+            // Let clicks fall through nvgSurface to reach PluginMode's mouseDown
+            editor->nvgSurface.setInterceptsMouseClicks(false, false);
+            setInterceptsMouseClicks(true, true);
         } else {
             float scale = getWidth() / width;
             pluginModeScale = scale;
