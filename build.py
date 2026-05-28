@@ -193,9 +193,8 @@ if _plugin_mode_h.exists():
     int kobossActivePreset = 0;
 
     bool isKobossChorus() const {
-        if (!cnv) return false;
-        auto const name = cnv->patch.getTitle().upToLastOccurrenceOf(".pd", false, true);
-        return name == "chorus" || name == "Koboss Chorus";
+        // This binary is built specifically for Koboss Chorus — always true
+        return true;
     }
 
     juce::Rectangle<float> kobossButton(int idx) const {
@@ -245,7 +244,7 @@ if _plugin_mode_h.exists():
         // Version (top right, monospace, grey)
         g.setColour(subColor);
         g.setFont(Fonts::getMonospaceFont().withHeight(9.0f).withExtraKerningFactor(0.05f));
-        g.drawText(JUCE_STRINGIFY(CUSTOM_PLUGIN_VERSION), (int)W - 70, 17, 48, 14, Justification::topRight, false);
+        g.drawText("v0.2.0", (int)W - 70, 17, 48, 14, Justification::topRight, false);
 
         // 3 preset buttons
         constexpr float cornerRadius = 4.0f;
