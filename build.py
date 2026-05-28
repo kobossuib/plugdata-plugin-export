@@ -338,6 +338,17 @@ if _plugin_mode_h.exists():
 
     _plugin_mode_h.write_text(_src, encoding='utf-8')
 
+    # 7. Skip NVG renderArea entirely when in plugin mode (this binary = chorus only)
+    _editor_cpp = Path("plugdata/Source/PluginEditor.cpp")
+    if _editor_cpp.exists():
+        _ecpp = _editor_cpp.read_text(encoding='utf-8')
+        _ra_needle = 'void PluginEditor::renderArea(NVGcontext* nvg, Rectangle<int> const area)\n{\n    if (isInPluginMode()) {'
+        _ra_new = 'void PluginEditor::renderArea(NVGcontext* nvg, Rectangle<int> const area)\n{\n    if (isInPluginMode()) return; // Koboss: pluginMode paint() does it all\n    if (isInPluginMode()) {'
+        if _ra_needle in _ecpp and "Koboss: pluginMode paint() does it all" not in _ecpp:
+            _ecpp = _ecpp.replace(_ra_needle, _ra_new, 1)
+            _editor_cpp.write_text(_ecpp, encoding='utf-8')
+            print("Koboss patch: PluginEditor::renderArea skips NVG when in plugin mode")
+
     # Ensure Fonts.h is included in PluginMode.h
     if '#include "Utility/Fonts.h"' not in _src:
         _src = _plugin_mode_h.read_text(encoding='utf-8')
