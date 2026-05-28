@@ -179,6 +179,13 @@ if _plugin_mode_h.exists():
         _src = _src.replace(_title_needle, _title_new)
         print("Koboss patch: hid PluginMode title text")
 
+    # 2a. Skip NVG render() entirely for chorus (so paint() can cover the full component)
+    _render_needle = '    void render(NVGcontext* nvg, Rectangle<int> const area)\n    {\n        NVGScopedState scopedState(nvg);'
+    _render_new = '    void render(NVGcontext* nvg, Rectangle<int> const area)\n    {\n        if (isKobossChorus()) return; // Koboss: paint() does it all\n        NVGScopedState scopedState(nvg);'
+    if _render_needle in _src and "Koboss: paint() does it all" not in _src:
+        _src = _src.replace(_render_needle, _render_new, 1)
+        print("Koboss patch: render() skips NVG for chorus")
+
     # 2b. Inject handleKobossClick call into existing mouseDown
     _mousedown_needle = 'void mouseDown(MouseEvent const& e) override\n    {\n\n        if (scaleComboBox.contains(e.getEventRelativeTo(&scaleComboBox).getPosition()) || !e.mods.isLeftButtonDown())'
     _mousedown_new = 'void mouseDown(MouseEvent const& e) override\n    {\n        if (handleKobossClick(e)) return;\n\n        if (scaleComboBox.contains(e.getEventRelativeTo(&scaleComboBox).getPosition()) || !e.mods.isLeftButtonDown())'
