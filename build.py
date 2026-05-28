@@ -179,6 +179,13 @@ if _plugin_mode_h.exists():
         _src = _src.replace(_title_needle, _title_new)
         print("Koboss patch: hid PluginMode title text")
 
+    # 2b. Inject handleKobossClick call into existing mouseDown
+    _mousedown_needle = 'void mouseDown(MouseEvent const& e) override\n    {\n\n        if (scaleComboBox.contains(e.getEventRelativeTo(&scaleComboBox).getPosition()) || !e.mods.isLeftButtonDown())'
+    _mousedown_new = 'void mouseDown(MouseEvent const& e) override\n    {\n        if (handleKobossClick(e)) return;\n\n        if (scaleComboBox.contains(e.getEventRelativeTo(&scaleComboBox).getPosition()) || !e.mods.isLeftButtonDown())'
+    if _mousedown_needle in _src and "handleKobossClick(e)" not in _src:
+        _src = _src.replace(_mousedown_needle, _mousedown_new, 1)
+        print("Koboss patch: hooked mouseDown for chorus clicks")
+
     # 3. Inject custom Koboss Chorus UI (paint + mouseDown) before paint() definition
     _custom_ui_marker = "// Koboss Chorus custom UI"
     if _custom_ui_marker not in _src:
@@ -305,17 +312,15 @@ if _plugin_mode_h.exists():
         g.drawText("FOR STEREO", (int)W - 100, (int)H - 18, 78, 12, Justification::topRight, false);
     }
 
-    void mouseDown(juce::MouseEvent const& e) override {
-        if (isKobossChorus()) {
-            int const p = kobossPresetAt(e.getPosition());
-            if (p >= 0 && p != kobossActivePreset) {
-                kobossActivePreset = p;
-                editor->pd->sendFloat("preset", static_cast<float>(p));
-                repaint();
-                return;
-            }
+    bool handleKobossClick(juce::MouseEvent const& e) {
+        if (!isKobossChorus()) return false;
+        int const p = kobossPresetAt(e.getPosition());
+        if (p >= 0 && p != kobossActivePreset) {
+            kobossActivePreset = p;
+            editor->pd->sendFloat("preset", static_cast<float>(p));
+            repaint();
         }
-        Component::mouseDown(e);
+        return true; // swallow click in chorus mode
     }
     // ──────────────────────────────────────────────────────────────────────────
 
