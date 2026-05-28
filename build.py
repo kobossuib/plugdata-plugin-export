@@ -135,23 +135,21 @@ if errors:
 
 # ── Continue with the rest of the build ─────────────────────────────────────
 
-# Koboss patches to PluginMode.h
-# IMPORTANT order: more-specific patches (with longer context) must run BEFORE
-# more-generic patches that would otherwise gobble up their needles.
+# Koboss patches to PluginMode.h — Plan B: NVG drawing (native to plugdata)
 _plugin_mode_h = Path("plugdata/Source/PluginMode.h")
 if _plugin_mode_h.exists():
     _src = _plugin_mode_h.read_text(encoding='utf-8')
 
-    # 0a. Hide titleBar + cnv when chorus (rewrites resized()'s else branch — must run FIRST)
+    # 1. Hide titleBar and cnv when chorus (in resized's normal-mode branch).
+    #    Keep nvgSurface VISIBLE because render() is what we use to paint.
     _resized_hide_needle = '        } else {\n            float scale = getWidth() / width;\n            pluginModeScale = scale;\n            \n            scaleComboBox.setVisible(true);\n            editorButton->setVisible(true);\n\n            titleBar.setBounds(0, 0, getWidth(), titlebarHeight);\n            scaleComboBox.setBounds(8, 8, 74, titlebarHeight - 16);\n            editorButton->setBounds(getWidth() - titlebarHeight, 0, titlebarHeight, titlebarHeight);'
     _resized_hide_new = '''        } else if (isKobossChorus()) {
-            // Koboss: hide everything plugdata draws so JUCE paint() owns the canvas
+            // Koboss: hide chrome; NVG render() will do all drawing
             pluginModeScale = 1.0f;
             titleBar.setVisible(false);
             scaleComboBox.setVisible(false);
             editorButton->setVisible(false);
             cnv->setVisible(false);
-            editor->nvgSurface.setVisible(false);
         } else {
             float scale = getWidth() / width;
             pluginModeScale = scale;
@@ -162,59 +160,53 @@ if _plugin_mode_h.exists():
             titleBar.setBounds(0, 0, getWidth(), titlebarHeight);
             scaleComboBox.setBounds(8, 8, 74, titlebarHeight - 16);
             editorButton->setBounds(getWidth() - titlebarHeight, 0, titlebarHeight, titlebarHeight);'''
-    if _resized_hide_needle in _src and "Koboss: hide titleBar and canvas" not in _src:
+    if _resized_hide_needle in _src and "Koboss: hide chrome" not in _src:
         _src = _src.replace(_resized_hide_needle, _resized_hide_new, 1)
-        print("Koboss patch: resized() hides titleBar and canvas for chorus")
+        print("Koboss patch: resized() hides chrome for chorus")
 
-    # 1. Hide the "Plugin Info" (P) button (replaces remaining editorButton lines)
+    # 2. Hide the "Plugin Info" (P) button
     _needle = 'editorButton->setBounds(getWidth() - titlebarHeight, 0, titlebarHeight, titlebarHeight);'
     _new = 'editorButton->setBounds(-9999, -9999, 1, 1); // Koboss: hide info button'
     if _needle in _src and _new not in _src:
         _src = _src.replace(_needle, _new)
-        print("Koboss patch: hid PluginMode info button")
+        print("Koboss patch: hid info button")
 
-    # 2. Hide centered patch title text
+    # 3. Hide centered patch title text (paint method draws nothing for title)
     _title_needle = 'g.drawText(cnv->patch.getTitle().upToLastOccurrenceOf(".pd", false, true), titleBar.getBounds(), Justification::centred);'
     _title_new = '// Koboss: title hidden'
     if _title_needle in _src and _title_new not in _src:
         _src = _src.replace(_title_needle, _title_new)
-        print("Koboss patch: hid PluginMode title text")
+        print("Koboss patch: hid title text")
 
-    # 2a. Skip NVG render() entirely for chorus (so paint() can cover the full component)
+    # 4. Replace render() body with our NVG custom drawing for chorus mode
     _render_needle = '    void render(NVGcontext* nvg, Rectangle<int> const area)\n    {\n        NVGScopedState scopedState(nvg);'
-    _render_new = '    void render(NVGcontext* nvg, Rectangle<int> const area)\n    {\n        if (isKobossChorus()) return; // Koboss: paint() does it all\n        NVGScopedState scopedState(nvg);'
-    if _render_needle in _src and "Koboss: paint() does it all" not in _src:
+    _render_new = '    void render(NVGcontext* nvg, Rectangle<int> const area)\n    {\n        if (isKobossChorus()) { renderKobossChorus(nvg); return; }\n        NVGScopedState scopedState(nvg);'
+    if _render_needle in _src and "renderKobossChorus(nvg)" not in _src:
         _src = _src.replace(_render_needle, _render_new, 1)
-        print("Koboss patch: render() skips NVG for chorus")
+        print("Koboss patch: render() delegates to renderKobossChorus")
 
-    # 2b. Inject handleKobossClick call into existing mouseDown
+    # 5. Hook handleKobossClick into existing mouseDown
     _mousedown_needle = 'void mouseDown(MouseEvent const& e) override\n    {\n\n        if (scaleComboBox.contains(e.getEventRelativeTo(&scaleComboBox).getPosition()) || !e.mods.isLeftButtonDown())'
     _mousedown_new = 'void mouseDown(MouseEvent const& e) override\n    {\n        if (handleKobossClick(e)) return;\n\n        if (scaleComboBox.contains(e.getEventRelativeTo(&scaleComboBox).getPosition()) || !e.mods.isLeftButtonDown())'
     if _mousedown_needle in _src and "handleKobossClick(e)" not in _src:
         _src = _src.replace(_mousedown_needle, _mousedown_new, 1)
-        print("Koboss patch: hooked mouseDown for chorus clicks")
+        print("Koboss patch: hooked mouseDown")
 
-    # 3. Inject custom Koboss Chorus UI (paint + mouseDown) before paint() definition
+    # 6. Inject custom UI methods before paint() definition
     _custom_ui_marker = "// Koboss Chorus custom UI"
     if _custom_ui_marker not in _src:
-        _custom_ui_block = '''    // Koboss Chorus custom UI ─────────────────────────────────────────────────
+        _custom_ui_block = '''    // Koboss Chorus custom UI (NVG drawing)
     int kobossActivePreset = 0;
 
-    bool isKobossChorus() const {
-        // This binary is built specifically for Koboss Chorus — always true
-        return true;
-    }
+    bool isKobossChorus() const { return true; }
 
     juce::Rectangle<float> kobossButton(int idx) const {
-        constexpr int cellSize = 44;
-        constexpr int gap = 6;
-        constexpr int totalW = 3 * cellSize + 2 * gap;
-        int const startX = (getWidth() - totalW) / 2;
-        int const btnY = 50;
-        return juce::Rectangle<float>(static_cast<float>(startX + idx * (cellSize + gap)),
-                                      static_cast<float>(btnY),
-                                      static_cast<float>(cellSize),
-                                      static_cast<float>(cellSize));
+        constexpr float cellSize = 44.0f;
+        constexpr float gap = 6.0f;
+        constexpr float totalW = 3.0f * cellSize + 2.0f * gap;
+        float const startX = ((float)getWidth() - totalW) * 0.5f;
+        float const btnY = 50.0f;
+        return juce::Rectangle<float>(startX + (float)idx * (cellSize + gap), btnY, cellSize, cellSize);
     }
 
     int kobossPresetAt(juce::Point<int> p) const {
@@ -223,83 +215,108 @@ if _plugin_mode_h.exists():
         return -1;
     }
 
-    void paintKobossChorus(Graphics& g) {
-        using juce::Colour;
-        using juce::Justification;
-        using juce::Rectangle;
+    static NVGcolor nvgHex(uint32_t rgb, float a = 1.0f) {
+        return nvgRGBA((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, (unsigned char)(a * 255.0f));
+    }
 
-        auto const W = static_cast<float>(getWidth());
-        auto const H = static_cast<float>(getHeight());
-
-        auto const bgColor = Colour(0xfffafaf7);
-        auto const fgColor = Colour(0xff1a1a1a);
-        auto const subColor = Colour(0xff8a8a8a);
-        auto const dimColor = Colour(0xffbababa);
-        auto const accentColor = Colour(0xffff6a3d);
+    void renderKobossChorus(NVGcontext* nvg) {
+        float const W = (float)getWidth();
+        float const H = (float)getHeight();
 
         // Background
-        g.fillAll(bgColor);
+        nvgBeginPath(nvg);
+        nvgRect(nvg, 0, 0, W, H);
+        nvgFillColor(nvg, nvgHex(0xfafaf7));
+        nvgFill(nvg);
 
-        // Header: KOBOSS (bold) + CHORUS (light grey)
-        g.setColour(fgColor);
-        g.setFont(Fonts::getBoldFont().withHeight(14.0f));
-        g.drawText("KOBOSS", 22, 14, 80, 18, Justification::topLeft, false);
+        // Header: KOBOSS (bold) + CHORUS (regular grey)
+        nvgFontFace(nvg, "Inter-Bold");
+        nvgFontSize(nvg, 14.0f);
+        nvgTextAlign(nvg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+        nvgFillColor(nvg, nvgHex(0x1a1a1a));
+        nvgText(nvg, 22, 14, "KOBOSS", nullptr);
 
-        g.setColour(subColor);
-        g.setFont(Fonts::getDefaultFont().withHeight(10.0f));
-        g.drawText("CHORUS", 80, 17, 60, 14, Justification::topLeft, false);
+        // Measure KOBOSS to position CHORUS right after it
+        float bounds[4];
+        nvgTextBounds(nvg, 22, 14, "KOBOSS", nullptr, bounds);
+        float chorusX = bounds[2] + 8;
+
+        nvgFontFace(nvg, "Inter-Regular");
+        nvgFontSize(nvg, 10.5f);
+        nvgFillColor(nvg, nvgHex(0x8a8a8a));
+        nvgText(nvg, chorusX, 17, "CHORUS", nullptr);
 
         // Version (top right)
-        g.setColour(subColor);
-        g.setFont(Fonts::getDefaultFont().withHeight(10.0f));
-        g.drawText("v0.2.0", (int)W - 70, 17, 48, 14, Justification::topRight, false);
+        nvgTextAlign(nvg, NVG_ALIGN_RIGHT | NVG_ALIGN_TOP);
+        nvgFontFace(nvg, "Inter-Regular");
+        nvgFontSize(nvg, 10.0f);
+        nvgFillColor(nvg, nvgHex(0x8a8a8a));
+        nvgText(nvg, W - 22, 17, "v0.2.0", nullptr);
 
         // 3 preset buttons
-        char const* numbers[] = { "01", "02", "03" };
-        char const* labels[]  = { "SUBTLE", "CLASSIC", "WARM" };
+        const char* numbers[] = { "01", "02", "03" };
+        const char* labels[]  = { "SUBTLE", "CLASSIC", "WARM" };
 
         for (int i = 0; i < 3; ++i) {
             auto const btn = kobossButton(i);
             bool const active = (kobossActivePreset == i);
 
+            // Button background or border
+            nvgBeginPath(nvg);
+            nvgRoundedRect(nvg, btn.getX(), btn.getY(), btn.getWidth(), btn.getHeight(), 4.0f);
             if (active) {
-                g.setColour(fgColor);
-                g.fillRoundedRectangle(btn, 4.0f);
+                nvgFillColor(nvg, nvgHex(0x1a1a1a));
+                nvgFill(nvg);
             } else {
-                g.setColour(dimColor);
-                g.drawRoundedRectangle(btn, 4.0f, 1.0f);
+                nvgStrokeColor(nvg, nvgHex(0xbababa));
+                nvgStrokeWidth(nvg, 1.0f);
+                nvgStroke(nvg);
             }
 
-            // Number inside button
-            g.setColour(active ? bgColor : fgColor);
-            g.setFont(Fonts::getBoldFont().withHeight(15.0f));
-            g.drawText(numbers[i],
-                       (int)btn.getX(), (int)btn.getY(),
-                       (int)btn.getWidth(), (int)btn.getHeight(),
-                       Justification::centred, false);
+            // Number inside
+            nvgFontFace(nvg, "Inter-Bold");
+            nvgFontSize(nvg, 16.0f);
+            nvgTextAlign(nvg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+            nvgFillColor(nvg, active ? nvgHex(0xfafaf7) : nvgHex(0x1a1a1a));
+            nvgText(nvg, btn.getCentreX(), btn.getCentreY(), numbers[i], nullptr);
 
-            // Dot only on active
+            // Dot — naranja con halo, solo activo
             if (active) {
-                g.setColour(accentColor);
-                g.fillEllipse(btn.getRight() - 11.0f, btn.getY() + 5.0f, 6.0f, 6.0f);
+                float dotCx = btn.getRight() - 9.0f;
+                float dotCy = btn.getY() + 9.0f;
+                // halo outer
+                nvgBeginPath(nvg);
+                nvgCircle(nvg, dotCx, dotCy, 6.0f);
+                nvgFillColor(nvg, nvgHex(0xff6a3d, 0.20f));
+                nvgFill(nvg);
+                // halo inner
+                nvgBeginPath(nvg);
+                nvgCircle(nvg, dotCx, dotCy, 4.0f);
+                nvgFillColor(nvg, nvgHex(0xff6a3d, 0.40f));
+                nvgFill(nvg);
+                // core
+                nvgBeginPath(nvg);
+                nvgCircle(nvg, dotCx, dotCy, 2.5f);
+                nvgFillColor(nvg, nvgHex(0xff6a3d));
+                nvgFill(nvg);
             }
 
-            // Sub-label below button
-            g.setColour(active ? fgColor : subColor);
-            g.setFont(Fonts::getSemiBoldFont().withHeight(9.0f));
-            g.drawText(labels[i],
-                       (int)btn.getX() - 10,
-                       (int)btn.getBottom() + 8,
-                       (int)btn.getWidth() + 20,
-                       12,
-                       Justification::centred, false);
+            // Sub-label below
+            nvgFontFace(nvg, "Inter-SemiBold");
+            nvgFontSize(nvg, 9.0f);
+            nvgTextAlign(nvg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+            nvgFillColor(nvg, active ? nvgHex(0x1a1a1a) : nvgHex(0x8a8a8a));
+            nvgText(nvg, btn.getCentreX(), btn.getBottom() + 8, labels[i], nullptr);
         }
 
         // Footer
-        g.setColour(subColor);
-        g.setFont(Fonts::getDefaultFont().withHeight(9.0f));
-        g.drawText("KOBOSSBEATS.COM", 22, (int)H - 18, 150, 12, Justification::topLeft, false);
-        g.drawText("FOR STEREO", (int)W - 100, (int)H - 18, 78, 12, Justification::topRight, false);
+        nvgFontFace(nvg, "Inter-Regular");
+        nvgFontSize(nvg, 9.0f);
+        nvgFillColor(nvg, nvgHex(0x8a8a8a));
+        nvgTextAlign(nvg, NVG_ALIGN_LEFT | NVG_ALIGN_BOTTOM);
+        nvgText(nvg, 22, H - 12, "KOBOSSBEATS.COM", nullptr);
+        nvgTextAlign(nvg, NVG_ALIGN_RIGHT | NVG_ALIGN_BOTTOM);
+        nvgText(nvg, W - 22, H - 12, "FOR STEREO", nullptr);
     }
 
     bool handleKobossClick(juce::MouseEvent const& e) {
@@ -310,47 +327,20 @@ if _plugin_mode_h.exists():
             if (editor != nullptr && editor->pd != nullptr) {
                 editor->pd->sendFloat("preset", static_cast<float>(p));
             }
-            repaint();
+            if (editor != nullptr) editor->nvgSurface.invalidateAll();
         }
-        return true; // swallow click in chorus mode
+        return true;
     }
-    // ──────────────────────────────────────────────────────────────────────────
 
     '''
-        # Insert before the first paint(Graphics& g) method
         _paint_marker = '    void paint(Graphics& g) override\n    {'
         if _paint_marker in _src:
             _src = _src.replace(_paint_marker, _custom_ui_block + _paint_marker, 1)
             print("Koboss patch: inserted custom Chorus UI methods")
 
-    # 4. Make paint() early-return into paintKobossChorus when patch is chorus
-    _paint_early_needle = '    void paint(Graphics& g) override\n    {\n        if (!cnv)\n            return;'
-    _paint_early_new = '''    void paint(Graphics& g) override
-    {
-        if (isKobossChorus()) {
-            paintKobossChorus(g);
-            return;
-        }
-        if (!cnv)
-            return;'''
-    if _paint_early_needle in _src:
-        _src = _src.replace(_paint_early_needle, _paint_early_new, 1)
-        print("Koboss patch: paint() early-returns for chorus")
-
     _plugin_mode_h.write_text(_src, encoding='utf-8')
 
-    # 7. Skip NVG renderArea entirely when in plugin mode (this binary = chorus only)
-    _editor_cpp = Path("plugdata/Source/PluginEditor.cpp")
-    if _editor_cpp.exists():
-        _ecpp = _editor_cpp.read_text(encoding='utf-8')
-        _ra_needle = 'void PluginEditor::renderArea(NVGcontext* nvg, Rectangle<int> const area)\n{\n    if (isInPluginMode()) {'
-        _ra_new = 'void PluginEditor::renderArea(NVGcontext* nvg, Rectangle<int> const area)\n{\n    if (isInPluginMode()) return; // Koboss: pluginMode paint() does it all\n    if (isInPluginMode()) {'
-        if _ra_needle in _ecpp and "Koboss: pluginMode paint() does it all" not in _ecpp:
-            _ecpp = _ecpp.replace(_ra_needle, _ra_new, 1)
-            _editor_cpp.write_text(_ecpp, encoding='utf-8')
-            print("Koboss patch: PluginEditor::renderArea skips NVG when in plugin mode")
-
-    # Ensure Fonts.h is included in PluginMode.h
+    # 7. Ensure Fonts.h is included (used elsewhere too — keep for safety)
     if '#include "Utility/Fonts.h"' not in _src:
         _src = _plugin_mode_h.read_text(encoding='utf-8')
         _src = _src.replace('#include "PluginEditor.h"',
