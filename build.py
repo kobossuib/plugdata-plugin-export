@@ -145,12 +145,13 @@ if _plugin_mode_h.exists():
     # 0a. Hide titleBar + cnv when chorus (rewrites resized()'s else branch — must run FIRST)
     _resized_hide_needle = '        } else {\n            float scale = getWidth() / width;\n            pluginModeScale = scale;\n            \n            scaleComboBox.setVisible(true);\n            editorButton->setVisible(true);\n\n            titleBar.setBounds(0, 0, getWidth(), titlebarHeight);\n            scaleComboBox.setBounds(8, 8, 74, titlebarHeight - 16);\n            editorButton->setBounds(getWidth() - titlebarHeight, 0, titlebarHeight, titlebarHeight);'
     _resized_hide_new = '''        } else if (isKobossChorus()) {
-            // Koboss: hide titleBar and canvas — custom paint does everything
+            // Koboss: hide everything plugdata draws so JUCE paint() owns the canvas
             pluginModeScale = 1.0f;
             titleBar.setVisible(false);
             scaleComboBox.setVisible(false);
             editorButton->setVisible(false);
             cnv->setVisible(false);
+            editor->nvgSurface.setVisible(false);
         } else {
             float scale = getWidth() / width;
             pluginModeScale = scale;
