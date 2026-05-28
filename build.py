@@ -341,8 +341,7 @@ if _plugin_mode_h.exists():
         }
         if (!cnv)
             return;'''
-    if _paint_early_needle in _src and "if (isKobossChorus())" not in _src.split("void paint(Graphics& g) override\n    {", 1)[1].split("void paint", 1)[0]:
-        # Avoid double-insert if already patched
+    if _paint_early_needle in _src:
         _src = _src.replace(_paint_early_needle, _paint_early_new, 1)
         print("Koboss patch: paint() early-returns for chorus")
 
