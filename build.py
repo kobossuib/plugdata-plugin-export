@@ -487,9 +487,9 @@ if _plugin_mode_h.exists():
         int const deltaY = kobossDragStartY - e.getPosition().y;
         float newVal = juce::jlimit(0.0f, 1.0f, kobossDragStartValue + (float)deltaY / 150.0f);
 
-        // Magnetic snap to default value
+        // Magnetic snap to default value (small zone — allows fine ±0.2 dB adjustments)
         float defaultVal = (kobossKnobDragging == 0) ? 1.0f : 0.5f;
-        if (std::abs(newVal - defaultVal) < 0.035f) newVal = defaultVal;
+        if (std::abs(newVal - defaultVal) < 0.010f) newVal = defaultVal;
 
         const char* sendName = nullptr;
         if (kobossKnobDragging == 0) {
