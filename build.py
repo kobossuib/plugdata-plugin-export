@@ -213,10 +213,9 @@ if _plugin_mode_h.exists():
     _custom_ui_marker = "// Koboss Chorus custom UI"
     if _custom_ui_marker not in _src:
         _custom_ui_block = '''    // Koboss Chorus custom UI (NVG drawing)
-    int kobossActivePreset = 0;
+    // NOTE: editor->pd->kobossActivePreset/OutWet/OutGain live on editor->pd (PluginProcessor)
+    // so they persist when the editor is closed and reopened.
     bool kobossInSettings = false;
-    float kobossOutWet = 1.0f;
-    float kobossOutGain = 0.5f;
     int kobossKnobDragging = -1;
     int kobossDragStartY = 0;
     float kobossDragStartValue = 0.0f;
@@ -372,13 +371,13 @@ if _plugin_mode_h.exists():
         if (kobossInSettings) {
             // SETTINGS PAGE: two knobs
             char wetBuf[16];
-            std::snprintf(wetBuf, sizeof(wetBuf), "%d%%", (int)std::round(kobossOutWet * 100.0f));
+            std::snprintf(wetBuf, sizeof(wetBuf), "%d%%", (int)std::round(editor->pd->kobossOutWet * 100.0f));
             auto cWet = kobossKnobCenter(0);
-            renderKobossKnob(nvg, cWet.x, cWet.y, kobossOutWet, "WET", wetBuf);
+            renderKobossKnob(nvg, cWet.x, cWet.y, editor->pd->kobossOutWet, "WET", wetBuf);
 
             // gain knob — value 0..1 maps to 0..2x linear (0.5 = unity = 0 dB)
             char gainBuf[16];
-            float linear = kobossOutGain * 2.0f;
+            float linear = editor->pd->kobossOutGain * 2.0f;
             if (linear < 0.001f) {
                 std::snprintf(gainBuf, sizeof(gainBuf), "-inf");
             } else {
@@ -386,14 +385,14 @@ if _plugin_mode_h.exists():
                 std::snprintf(gainBuf, sizeof(gainBuf), "%+.1f", dB);
             }
             auto cGain = kobossKnobCenter(1);
-            renderKobossKnob(nvg, cGain.x, cGain.y, kobossOutGain, "GAIN  dB", gainBuf);
+            renderKobossKnob(nvg, cGain.x, cGain.y, editor->pd->kobossOutGain, "GAIN  dB", gainBuf);
         } else {
             // PRESETS PAGE
             const char* numbers[] = { "01", "02", "03" };
             const char* labels[]  = { "SUBTLE", "CLASSIC", "WARM" };
             for (int i = 0; i < 3; ++i) {
                 auto const btn = kobossButton(i);
-                bool const active = (kobossActivePreset == i);
+                bool const active = (editor->pd->kobossActivePreset == i);
                 nvgBeginPath(nvg);
                 nvgRoundedRect(nvg, btn.getX(), btn.getY(), btn.getWidth(), btn.getHeight(), 4.0f);
                 if (active) {
@@ -454,8 +453,8 @@ if _plugin_mode_h.exists():
                 if (e.getNumberOfClicks() >= 2) {
                     float defaultVal = (k == 0) ? 1.0f : 0.5f;
                     const char* sendName = (k == 0) ? "out_wet" : "out_gain";
-                    if (k == 0) kobossOutWet = defaultVal;
-                    else        kobossOutGain = defaultVal;
+                    if (k == 0) editor->pd->kobossOutWet = defaultVal;
+                    else        editor->pd->kobossOutGain = defaultVal;
                     if (editor != nullptr && editor->pd != nullptr) {
                         editor->pd->sendFloat(sendName, defaultVal);
                     }
@@ -465,13 +464,13 @@ if _plugin_mode_h.exists():
                 }
                 kobossKnobDragging = k;
                 kobossDragStartY = p.y;
-                kobossDragStartValue = (k == 0) ? kobossOutWet : kobossOutGain;
+                kobossDragStartValue = (k == 0) ? editor->pd->kobossOutWet : editor->pd->kobossOutGain;
                 return true;
             }
         } else {
             int const idx = kobossPresetAt(p);
-            if (idx >= 0 && idx != kobossActivePreset) {
-                kobossActivePreset = idx;
+            if (idx >= 0 && idx != editor->pd->kobossActivePreset) {
+                editor->pd->kobossActivePreset = idx;
                 if (editor != nullptr && editor->pd != nullptr) {
                     editor->pd->sendFloat("preset", static_cast<float>(idx));
                 }
@@ -493,10 +492,10 @@ if _plugin_mode_h.exists():
 
         const char* sendName = nullptr;
         if (kobossKnobDragging == 0) {
-            kobossOutWet = newVal;
+            editor->pd->kobossOutWet = newVal;
             sendName = "out_wet";
         } else {
-            kobossOutGain = newVal;
+            editor->pd->kobossOutGain = newVal;
             sendName = "out_gain";
         }
         if (editor != nullptr && editor->pd != nullptr) {
@@ -521,6 +520,25 @@ if _plugin_mode_h.exists():
         _src = _src.replace(_size_needle, _size_new, 1)
         _plugin_mode_h.write_text(_src, encoding='utf-8')
         print("Koboss patch: removed titlebar reservation in chorus size")
+
+    # 6c. Add persistent Koboss state to PluginProcessor (survives editor close/reopen)
+    _processor_h = Path("plugdata/Source/PluginProcessor.h")
+    if _processor_h.exists():
+        _php = _processor_h.read_text(encoding='utf-8')
+        _state_needle = 'class PluginProcessor final : public AudioProcessor\n    , public pd::Instance\n    , public SettingsFileListener {\npublic:\n    PluginProcessor();'
+        _state_new = '''class PluginProcessor final : public AudioProcessor
+    , public pd::Instance
+    , public SettingsFileListener {
+public:
+    // Koboss Chorus persistent state (lives in processor so it survives editor close/reopen)
+    int kobossActivePreset = 0;
+    float kobossOutWet = 1.0f;
+    float kobossOutGain = 0.5f;
+    PluginProcessor();'''
+        if _state_needle in _php and "kobossActivePreset" not in _php:
+            _php = _php.replace(_state_needle, _state_new, 1)
+            _processor_h.write_text(_php, encoding='utf-8')
+            print("Koboss patch: added persistent state to PluginProcessor")
 
     # 7. Make nvgSurface cover the FULL editor (no 40px gap reserved for plugdata toolbar)
     _editor_cpp = Path("plugdata/Source/PluginEditor.cpp")
