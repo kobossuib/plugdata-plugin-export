@@ -450,6 +450,19 @@ if _plugin_mode_h.exists():
         if (kobossInSettings) {
             int const k = kobossKnobAt(p);
             if (k >= 0) {
+                // Double-click resets to default
+                if (e.getNumberOfClicks() >= 2) {
+                    float defaultVal = (k == 0) ? 1.0f : 0.5f;
+                    const char* sendName = (k == 0) ? "out_wet" : "out_gain";
+                    if (k == 0) kobossOutWet = defaultVal;
+                    else        kobossOutGain = defaultVal;
+                    if (editor != nullptr && editor->pd != nullptr) {
+                        editor->pd->sendFloat(sendName, defaultVal);
+                    }
+                    if (editor != nullptr) editor->nvgSurface.invalidateAll();
+                    kobossKnobDragging = -1;
+                    return true;
+                }
                 kobossKnobDragging = k;
                 kobossDragStartY = p.y;
                 kobossDragStartValue = (k == 0) ? kobossOutWet : kobossOutGain;
@@ -473,6 +486,11 @@ if _plugin_mode_h.exists():
         if (kobossKnobDragging < 0) return false;
         int const deltaY = kobossDragStartY - e.getPosition().y;
         float newVal = juce::jlimit(0.0f, 1.0f, kobossDragStartValue + (float)deltaY / 150.0f);
+
+        // Magnetic snap to default value
+        float defaultVal = (kobossKnobDragging == 0) ? 1.0f : 0.5f;
+        if (std::abs(newVal - defaultVal) < 0.035f) newVal = defaultVal;
+
         const char* sendName = nullptr;
         if (kobossKnobDragging == 0) {
             kobossOutWet = newVal;
