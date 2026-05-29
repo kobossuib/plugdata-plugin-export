@@ -521,6 +521,51 @@ if _plugin_mode_h.exists():
         _plugin_mode_h.write_text(_src, encoding='utf-8')
         print("Koboss patch: removed titlebar reservation in chorus size")
 
+    # 6d. Save Koboss state in getStateInformation / restore in setStateInformation (survives project reopen)
+    _proc_cpp = Path("plugdata/Source/PluginProcessor.cpp")
+    if _proc_cpp.exists():
+        _pcpp = _proc_cpp.read_text(encoding='utf-8')
+        _get_needle = 'void PluginProcessor::getStateInformation(MemoryBlock& destData)\n{\n    setThis();\n\n    // Store pure-data and parameter state\n    MemoryOutputStream ostream(destData, false);'
+        _get_new = '''void PluginProcessor::getStateInformation(MemoryBlock& destData)
+{
+    setThis();
+
+    // Store pure-data and parameter state
+    MemoryOutputStream ostream(destData, false);
+
+    // Koboss state header: magic + 3 values
+    ostream.writeString("KBSS");
+    ostream.writeInt(kobossActivePreset);
+    ostream.writeFloat(kobossOutWet);
+    ostream.writeFloat(kobossOutGain);'''
+        if _get_needle in _pcpp and "Koboss state header" not in _pcpp:
+            _pcpp = _pcpp.replace(_get_needle, _get_new, 1)
+            print("Koboss patch: getStateInformation saves koboss state")
+
+        _set_needle = '    MemoryInputStream istream(data, sizeInBytes, false);\n\n    audioLock.enter();'
+        _set_new = '''    MemoryInputStream istream(data, sizeInBytes, false);
+
+    // Koboss state restore — read magic header if present
+    auto const _kbssMagicPos = istream.getPosition();
+    auto const _kbssMagic = istream.readString();
+    if (_kbssMagic == "KBSS") {
+        kobossActivePreset = istream.readInt();
+        kobossOutWet = istream.readFloat();
+        kobossOutGain = istream.readFloat();
+        sendFloat("preset", static_cast<float>(kobossActivePreset));
+        sendFloat("out_wet", kobossOutWet);
+        sendFloat("out_gain", kobossOutGain);
+    } else {
+        istream.setPosition(_kbssMagicPos);
+    }
+
+    audioLock.enter();'''
+        if _set_needle in _pcpp and "Koboss state restore" not in _pcpp:
+            _pcpp = _pcpp.replace(_set_needle, _set_new, 1)
+            print("Koboss patch: setStateInformation restores koboss state")
+
+        _proc_cpp.write_text(_pcpp, encoding='utf-8')
+
     # 6c. Add persistent Koboss state to PluginProcessor (survives editor close/reopen)
     _processor_h = Path("plugdata/Source/PluginProcessor.h")
     if _processor_h.exists():
