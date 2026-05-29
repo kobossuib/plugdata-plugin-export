@@ -328,7 +328,7 @@ if _plugin_mode_h.exists():
         float startAngle = PI * 0.75f;     // 135° (bottom-left in screen coords)
         float endAngle   = startAngle + value * (PI * 1.5f); // up to top-right
         nvgBeginPath(nvg);
-        nvgArc(nvg, cx, cy, kobossKnobRadius - 2.0f, startAngle, endAngle, NVG_CW);
+        nvgArc(nvg, cx, cy, kobossKnobRadius - 2.0f, startAngle, endAngle, NVG_HOLE);
         nvgStrokeColor(nvg, nvgHex(0x1a1a1a));
         nvgStrokeWidth(nvg, 2.5f);
         nvgStroke(nvg);
