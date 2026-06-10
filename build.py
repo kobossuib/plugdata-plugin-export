@@ -143,7 +143,7 @@ if _plugin_mode_h.exists():
     # 1. Hide titleBar and cnv when chorus (in resized's normal-mode branch).
     #    Keep nvgSurface VISIBLE because render() is what we use to paint.
     _resized_hide_needle = '        } else {\n            float scale = getWidth() / width;\n            pluginModeScale = scale;\n            \n            scaleComboBox.setVisible(true);\n            editorButton->setVisible(true);\n\n            titleBar.setBounds(0, 0, getWidth(), titlebarHeight);\n            scaleComboBox.setBounds(8, 8, 74, titlebarHeight - 16);\n            editorButton->setBounds(getWidth() - titlebarHeight, 0, titlebarHeight, titlebarHeight);'
-    _resized_hide_new = '''        } else if (isKobossChorus()) {
+    _resized_hide_new = '''        } else if (isKoboss()) {
             // Koboss: hide chrome; NVG render() will do all drawing
             pluginModeScale = 1.0f;
             titleBar.setVisible(false);
@@ -153,6 +153,17 @@ if _plugin_mode_h.exists():
             // Let clicks fall through nvgSurface to reach PluginMode's mouseDown
             editor->nvgSurface.setInterceptsMouseClicks(false, false);
             setInterceptsMouseClicks(true, true);
+            // NO robar el foco del teclado: así Ableton sigue recibiendo las notas
+            // MIDI del teclado del ordenador mientras Toni toquetea el plugin.
+            setWantsKeyboardFocus(false);
+            setMouseClickGrabsKeyboardFocus(false);
+            editor->nvgSurface.setWantsKeyboardFocus(false);
+            editor->nvgSurface.setMouseClickGrabsKeyboardFocus(false);
+            // Delay: arrancar repintado continuo para animar el iso
+            if (isKobossDelay() && !kobossDelayTimer.isTimerRunning()) {
+                kobossDelayTimer.owner = this;
+                kobossDelayTimer.startTimerHz(60);
+            }
         } else {
             float scale = getWidth() / width;
             pluginModeScale = scale;
@@ -181,9 +192,34 @@ if _plugin_mode_h.exists():
         _src = _src.replace(_title_needle, _title_new)
         print("Koboss patch: hid title text")
 
+    # 3b. NO robar el foco del teclado en koboss: PluginMode::keyPressed hace
+    #     grabKeyboardFocus() en CADA tecla -> el host (Ableton) nunca recibe las
+    #     notas MIDI del teclado del ordenador. Para koboss, pasar la tecla y no robar.
+    _kbfocus_needle = '''            setKioskMode(false);
+            return true;
+        }
+        grabKeyboardFocus();
+
+        return false;
+    }'''
+    _kbfocus_new = '''            setKioskMode(false);
+            return true;
+        }
+        if (isKoboss()) {
+            if (isKobossDelay() && handleKobossDelayKey(key)) return true;
+            return false; // Koboss: no robar foco -> el host recibe teclas/MIDI
+        }
+        grabKeyboardFocus();
+
+        return false;
+    }'''
+    if _kbfocus_needle in _src and "Koboss: no robar foco" not in _src:
+        _src = _src.replace(_kbfocus_needle, _kbfocus_new, 1)
+        print("Koboss patch: keyPressed no roba el foco del teclado")
+
     # 4. Replace render() body with our NVG custom drawing for chorus mode
     _render_needle = '    void render(NVGcontext* nvg, Rectangle<int> const area)\n    {\n        NVGScopedState scopedState(nvg);'
-    _render_new = '    void render(NVGcontext* nvg, Rectangle<int> const area)\n    {\n        if (isKobossChorus()) { renderKobossChorus(nvg); return; }\n        NVGScopedState scopedState(nvg);'
+    _render_new = '    void render(NVGcontext* nvg, Rectangle<int> const area)\n    {\n        if (isKobossDelay()) { renderKobossDelay(nvg); return; }\n        if (isKobossChorus()) { renderKobossChorus(nvg); return; }\n        NVGScopedState scopedState(nvg);'
     if _render_needle in _src and "renderKobossChorus(nvg)" not in _src:
         _src = _src.replace(_render_needle, _render_new, 1)
         print("Koboss patch: render() delegates to renderKobossChorus")
@@ -204,10 +240,10 @@ if _plugin_mode_h.exists():
 
     # 5c. Hook handleKobossUp into existing mouseUp
     _mouseup_needle = 'void mouseUp(MouseEvent const& e) override\n    {\n        isDraggingWindow = false;\n    }'
-    _mouseup_new = 'void mouseUp(MouseEvent const& e) override\n    {\n        kobossKnobDragging = -1;\n        isDraggingWindow = false;\n    }'
+    _mouseup_new = 'void mouseUp(MouseEvent const& e) override\n    {\n        kobossKnobDragging = -1;\n        isDraggingWindow = false;\n    }\n\n    void mouseWheelMove(MouseEvent const& e, MouseWheelDetails const& wheel) override\n    {\n        if (isKobossDelay() && handleKobossDelayWheel(e, wheel)) return;\n    }'
     if _mouseup_needle in _src and "kobossKnobDragging = -1" not in _src:
         _src = _src.replace(_mouseup_needle, _mouseup_new, 1)
-        print("Koboss patch: hooked mouseUp")
+        print("Koboss patch: hooked mouseUp + mouseWheelMove")
 
     # 6. Inject custom UI methods before paint() definition
     _custom_ui_marker = "// Koboss Chorus custom UI"
@@ -220,7 +256,19 @@ if _plugin_mode_h.exists():
     int kobossDragStartY = 0;
     float kobossDragStartValue = 0.0f;
 
-    bool isKobossChorus() const { return true; }
+    bool isKobossDelay() const { return cnv && cnv->patch.getTitle().containsIgnoreCase("delay"); }
+    bool isKobossChorus() const { return cnv && cnv->patch.getTitle().containsIgnoreCase("chorus"); }
+    bool isKoboss() const { return isKobossDelay() || isKobossChorus(); }
+
+    // Repaint continuo (~60fps) para animar el visualizador iso del delay
+    struct KbDelayTimer : public juce::Timer {
+        PluginMode* owner = nullptr;
+        void timerCallback() override {
+            if (owner != nullptr && owner->editor != nullptr)
+                owner->editor->nvgSurface.invalidateAll();
+        }
+    };
+    KbDelayTimer kobossDelayTimer;
 
     juce::Rectangle<float> kobossButton(int idx) const {
         constexpr float cellSize = 44.0f;
@@ -310,7 +358,7 @@ if _plugin_mode_h.exists():
         nvgTextAlign(nvg, NVG_ALIGN_LEFT | NVG_ALIGN_BOTTOM);
         nvgText(nvg, 22, H - 12, "KOBOSSBEATS.COM", nullptr);
         nvgTextAlign(nvg, NVG_ALIGN_RIGHT | NVG_ALIGN_BOTTOM);
-        nvgText(nvg, W - 22, H - 12, "v0.2.0", nullptr);
+        nvgText(nvg, W - 22, H - 12, "v0.2.1", nullptr);
     }
 
     void renderKobossKnob(NVGcontext* nvg, float cx, float cy, float value,
@@ -436,6 +484,7 @@ if _plugin_mode_h.exists():
     }
 
     bool handleKobossClick(juce::MouseEvent const& e) {
+        if (isKobossDelay()) return handleKobossDelayClick(e);
         if (!isKobossChorus()) return false;
         auto const p = e.getPosition();
 
@@ -482,6 +531,7 @@ if _plugin_mode_h.exists():
     }
 
     bool handleKobossDrag(juce::MouseEvent const& e) {
+        if (isKobossDelay()) return handleKobossDelayDrag(e);
         if (kobossKnobDragging < 0) return false;
         int const deltaY = kobossDragStartY - e.getPosition().y;
         float newVal = juce::jlimit(0.0f, 1.0f, kobossDragStartValue + (float)deltaY / 150.0f);
@@ -506,17 +556,50 @@ if _plugin_mode_h.exists():
     }
 
     '''
+        # Inyectar el bloque del Koboss Delay (render iso + controles + handlers)
+        _delay_path = Path("../render-koboss-delay.cpp")
+        if _delay_path.exists():
+            _delay_block = _delay_path.read_text(encoding='utf-8')
+            _dm = "// KBDELAY-BLOCK-START"
+            if _dm in _delay_block:
+                _delay_block = _delay_block[_delay_block.index(_dm):]
+            # Inyectar versión desde config.json como #define (fuente única de verdad)
+            _kb_version = "unknown"
+            try:
+                import json as _json
+                _cfg = _json.loads(Path("config.json").read_text(encoding='utf-8'))
+                if isinstance(_cfg, list) and _cfg:
+                    _kb_version = _cfg[0].get("version", "unknown")
+            except Exception:
+                pass
+            _version_define = f'#define KOBOSS_DELAY_VERSION "v{_kb_version}"\n'
+            _delay_block = _version_define + _delay_block
+            _custom_ui_block = _custom_ui_block + "\n    // ===== Koboss Delay custom UI =====\n" + _delay_block + "\n"
+            print(f"Koboss patch: appended Koboss Delay UI block (v{_kb_version})")
+        else:
+            # Sin el bloque del delay (p.ej. build CI del Chorus): stubs inertes para
+            # que los hooks isKobossDelay() compilen. Nunca se ejecutan con el chorus.
+            _custom_ui_block = _custom_ui_block + '''
+    // ===== Koboss Delay stubs (build sin render-koboss-delay.cpp) =====
+    void renderKobossDelay(NVGcontext* nvg) {}
+    bool handleKobossDelayKey(juce::KeyPress const& key) { return false; }
+    bool handleKobossDelayWheel(juce::MouseEvent const& e, juce::MouseWheelDetails const& wheel) { return false; }
+    bool handleKobossDelayClick(juce::MouseEvent const& e) { return false; }
+    bool handleKobossDelayDrag(juce::MouseEvent const& e) { return false; }
+
+'''
+            print("Koboss patch: render-koboss-delay.cpp no encontrado — stubs inertes")
         _paint_marker = '    void paint(Graphics& g) override\n    {'
         if _paint_marker in _src:
             _src = _src.replace(_paint_marker, _custom_ui_block + _paint_marker, 1)
-            print("Koboss patch: inserted custom Chorus UI methods")
+            print("Koboss patch: inserted custom Koboss UI methods")
 
     _plugin_mode_h.write_text(_src, encoding='utf-8')
 
     # 6b. Don't reserve titlebar height in plugin window size (so editor matches patch dimensions)
     _size_needle = 'auto newHeight = static_cast<int>(height * scale) + titlebarHeight + nativeTitleBarHeight;'
-    _size_new = 'auto newHeight = static_cast<int>(height * scale) + (isKobossChorus() ? 0 : titlebarHeight) + nativeTitleBarHeight;'
-    if _size_needle in _src and "isKobossChorus() ? 0 : titlebarHeight" not in _src:
+    _size_new = 'auto newHeight = static_cast<int>(height * scale) + (isKoboss() ? 0 : titlebarHeight) + nativeTitleBarHeight;'
+    if _size_needle in _src and "isKoboss() ? 0 : titlebarHeight" not in _src:
         _src = _src.replace(_size_needle, _size_new, 1)
         _plugin_mode_h.write_text(_src, encoding='utf-8')
         print("Koboss patch: removed titlebar reservation in chorus size")
@@ -533,11 +616,25 @@ if _plugin_mode_h.exists():
     // Store pure-data and parameter state
     MemoryOutputStream ostream(destData, false);
 
-    // Koboss state header: magic + 3 values
-    ostream.writeString("KBSS");
+    // Koboss state header v4: magic + chorus(3) + delay + sync(2) + v2(pingpong,fxa,fxb) + out + duck
+    ostream.writeString("KBS7");
     ostream.writeInt(kobossActivePreset);
     ostream.writeFloat(kobossOutWet);
-    ostream.writeFloat(kobossOutGain);'''
+    ostream.writeFloat(kobossOutGain);
+    ostream.writeFloat(kbTime);
+    ostream.writeFloat(kbFeedback);
+    ostream.writeFloat(kbWidth);
+    ostream.writeFloat(kbMix);
+    ostream.writeFloat(kbAmount);
+    ostream.writeInt(kbFx);
+    ostream.writeInt(kbCurve);
+    ostream.writeInt(kbSyncMode);
+    ostream.writeFloat(kbTimeMs);
+    ostream.writeInt(kbPingpong);
+    for (int _i = 0; _i < 4; ++_i) ostream.writeFloat(kbFxA[_i]);
+    for (int _i = 0; _i < 4; ++_i) ostream.writeFloat(kbFxB[_i]);
+    ostream.writeFloat(kbOut);
+    ostream.writeFloat(kbDuck);'''
         if _get_needle in _pcpp and "Koboss state header" not in _pcpp:
             _pcpp = _pcpp.replace(_get_needle, _get_new, 1)
             print("Koboss patch: getStateInformation saves koboss state")
@@ -545,16 +642,44 @@ if _plugin_mode_h.exists():
         _set_needle = '    MemoryInputStream istream(data, sizeInBytes, false);\n\n    audioLock.enter();'
         _set_new = '''    MemoryInputStream istream(data, sizeInBytes, false);
 
-    // Koboss state restore — read magic header if present
+    // Koboss state restore — read magic header if present (los sendFloat van DESPUES de cargar el patch)
+    bool _kbssRestored = false;
     auto const _kbssMagicPos = istream.getPosition();
     auto const _kbssMagic = istream.readString();
-    if (_kbssMagic == "KBSS") {
+    if (_kbssMagic == "KBS7" || _kbssMagic == "KBS6" || _kbssMagic == "KBS5" || _kbssMagic == "KBS4" || _kbssMagic == "KBS3" || _kbssMagic == "KBS2") {
         kobossActivePreset = istream.readInt();
         kobossOutWet = istream.readFloat();
         kobossOutGain = istream.readFloat();
-        sendFloat("preset", static_cast<float>(kobossActivePreset));
-        sendFloat("out_wet", kobossOutWet);
-        sendFloat("out_gain", kobossOutGain);
+        kbTime = istream.readFloat();
+        kbFeedback = istream.readFloat();
+        kbWidth = istream.readFloat();
+        kbMix = istream.readFloat();
+        kbAmount = istream.readFloat();
+        kbFx = istream.readInt();
+        kbCurve = istream.readInt();
+        if (_kbssMagic == "KBS3" || _kbssMagic == "KBS4" || _kbssMagic == "KBS5" || _kbssMagic == "KBS6" || _kbssMagic == "KBS7") {
+            kbSyncMode = istream.readInt();
+            kbTimeMs = istream.readFloat();
+        }
+        if (_kbssMagic == "KBS4") {   // formato viejo: 1 par de params -> a todos
+            kbPingpong = istream.readInt();
+            float _a = istream.readFloat(), _b = istream.readFloat();
+            for (int _i = 0; _i < 4; ++_i) { kbFxA[_i] = _a; kbFxB[_i] = _b; }
+        }
+        if (_kbssMagic == "KBS5" || _kbssMagic == "KBS6" || _kbssMagic == "KBS7") {   // params POR efecto
+            kbPingpong = istream.readInt();
+            for (int _i = 0; _i < 4; ++_i) kbFxA[_i] = istream.readFloat();
+            for (int _i = 0; _i < 4; ++_i) kbFxB[_i] = istream.readFloat();
+        }
+        if (_kbssMagic == "KBS6" || _kbssMagic == "KBS7") kbOut = istream.readFloat();
+        if (_kbssMagic == "KBS7") kbDuck = istream.readFloat();
+        kbFreeze = 0;   // el freeze NO persiste activo (no abrir el proyecto en silencio)
+        _kbssRestored = true;
+    } else if (_kbssMagic == "KBSS") {
+        kobossActivePreset = istream.readInt();
+        kobossOutWet = istream.readFloat();
+        kobossOutGain = istream.readFloat();
+        _kbssRestored = true;
     } else {
         istream.setPosition(_kbssMagicPos);
     }
@@ -564,7 +689,105 @@ if _plugin_mode_h.exists():
             _pcpp = _pcpp.replace(_set_needle, _set_new, 1)
             print("Koboss patch: setStateInformation restores koboss state")
 
+        # Push del estado koboss al dsp DESPUES de cargar el patch (si no, el [loadbang]
+        # del patch reescribe los defaults y pisa el estado restaurado → duplicar pista
+        # o reabrir proyecto volvia al preset/wet por defecto aunque la GUI mostrara otro).
+        _push_needle = '    audioLock.exit();\n\n    delete[] xmlData;'
+        _push_new = '''    audioLock.exit();
+
+    // Koboss: empujar estado restaurado al dsp DESPUES del loadbang del patch
+    if (_kbssRestored) {
+        sendFloat("preset", static_cast<float>(kobossActivePreset));
+        sendFloat("out_wet", kobossOutWet);
+        sendFloat("out_gain", kobossOutGain);
+        sendFloat("feedback", kbFeedback * 95.0f);
+        sendFloat("mix", kbMix * 100.0f);
+        sendFloat("pingpong", static_cast<float>(kbPingpong));
+        sendFloat("fx", static_cast<float>(kbFx));
+        { int _f = kbFx < 0 ? 0 : (kbFx > 3 ? 3 : kbFx);
+          sendFloat("fxa", kbFxA[_f]); sendFloat("fxb", kbFxB[_f]); }
+        sendFloat("out", std::pow(10.0f, (-24.0f + kbOut * 30.0f) / 20.0f));  // dB -> lineal
+        sendFloat("duck", kbDuck);
+        sendFloat("freeze", 0.0f);
+        if (kbSyncMode == 0) sendFloat("time", kbTimeMs);
+    }
+
+    delete[] xmlData;'''
+        if _push_needle in _pcpp and "empujar estado restaurado al dsp" not in _pcpp:
+            _pcpp = _pcpp.replace(_push_needle, _push_new, 1)
+            print("Koboss patch: setStateInformation pushes koboss state after patch load")
+
+        # Audio tap del Koboss Delay — RMS input (dry/centro) antes del proceso pd
+        _tap_in_needle = '    auto targetBlock = dsp::AudioBlock<float>(buffer);'
+        _tap_in_new = '''    // Koboss Delay audio tap — RMS input (dry/centro) antes del proceso pd
+    {
+        int _kbN = buffer.getNumSamples();
+        if (_kbN > 0 && buffer.getNumChannels() > 0) {
+            auto* _kbL = buffer.getReadPointer(0);
+            auto* _kbR = buffer.getNumChannels() > 1 ? buffer.getReadPointer(1) : _kbL;
+            float _kbS = 0.0f;
+            for (int _i = 0; _i < _kbN; ++_i) { float _m = (_kbL[_i] + _kbR[_i]) * 0.5f; _kbS += _m * _m; }
+            kobossDelayDryR.store(std::sqrt(_kbS / (float)_kbN));
+        }
+    }
+    // Koboss Delay: BPM del host (fuente canonica para el sync; mas fiable que [r __playhead])
+    if (auto* _kbPh = getPlayHead()) {
+        auto _kbInfo = _kbPh->getPosition();
+        if (_kbInfo.hasValue() && _kbInfo->getBpm().hasValue())
+            kbHostBpm.store(static_cast<float>(*_kbInfo->getBpm()));
+    }
+    auto targetBlock = dsp::AudioBlock<float>(buffer);'''
+        if _tap_in_needle in _pcpp and "Koboss Delay audio tap — RMS input" not in _pcpp:
+            _pcpp = _pcpp.replace(_tap_in_needle, _tap_in_new, 1)
+            print("Koboss patch: processBlock input RMS tap")
+
+        # Audio tap del Koboss Delay — RMS output L/R (ecos ping pong) tras el proceso
+        _tap_out_needle = '    auto const targetGain = volume->load();'
+        _tap_out_new = '''    // Koboss Delay audio tap — RMS output L/R (ecos ping pong) tras el proceso
+    {
+        int _kbN = buffer.getNumSamples();
+        if (_kbN > 0 && buffer.getNumChannels() > 0) {
+            auto* _kbL = buffer.getReadPointer(0);
+            auto* _kbR = buffer.getNumChannels() > 1 ? buffer.getReadPointer(1) : _kbL;
+            float _kbSL = 0.0f, _kbSR = 0.0f, _kbPk = 0.0f;
+            for (int _i = 0; _i < _kbN; ++_i) {
+                _kbSL += _kbL[_i] * _kbL[_i]; _kbSR += _kbR[_i] * _kbR[_i];
+                float _aL = std::abs(_kbL[_i]), _aR = std::abs(_kbR[_i]);
+                if (_aL > _kbPk) _kbPk = _aL; if (_aR > _kbPk) _kbPk = _aR;
+            }
+            kobossDelayWL.store(std::sqrt(_kbSL / (float)_kbN));
+            kobossDelayWR.store(std::sqrt(_kbSR / (float)_kbN));
+            kobossDelayOutPeak.store(_kbPk);
+        }
+    }
+    auto const targetGain = volume->load();'''
+        if _tap_out_needle in _pcpp and "Koboss Delay audio tap — RMS output" not in _pcpp:
+            _pcpp = _pcpp.replace(_tap_out_needle, _tap_out_new, 1)
+            print("Koboss patch: processBlock output RMS tap")
+
         _proc_cpp.write_text(_pcpp, encoding='utf-8')
+
+    # 6b2. Fix de entorno: WelcomePanel.h captura un structured binding en una
+    #      lambda (clang lo rechaza). Copiar a variable local. Necesario para que
+    #      el build compile tras un checkout limpio del submodulo.
+    _welcome_h = Path("plugdata/Source/Components/WelcomePanel.h")
+    if _welcome_h.exists():
+        _wh = _welcome_h.read_text(encoding='utf-8')
+        _wneedle = '''                    for (auto& [name, file] : previousVersions) {
+                        versionsSubMenu.addItem(name, [this, file] {
+                            parent.editor->getTabComponent().openPatch(URL(file));
+                        });
+                    }'''
+        _wnew = '''                    for (auto& [name, file] : previousVersions) {
+                        auto fileCopy = file; // clang no permite capturar structured bindings
+                        versionsSubMenu.addItem(name, [this, fileCopy] {
+                            parent.editor->getTabComponent().openPatch(URL(fileCopy));
+                        });
+                    }'''
+        if _wneedle in _wh and "auto fileCopy = file" not in _wh:
+            _wh = _wh.replace(_wneedle, _wnew, 1)
+            _welcome_h.write_text(_wh, encoding='utf-8')
+            print("Koboss patch: WelcomePanel.h structured-binding capture fix")
 
     # 6c. Add persistent Koboss state to PluginProcessor (survives editor close/reopen)
     _processor_h = Path("plugdata/Source/PluginProcessor.h")
@@ -579,31 +802,121 @@ public:
     int kobossActivePreset = 0;
     float kobossOutWet = 1.0f;
     float kobossOutGain = 0.5f;
+    // Koboss Delay params (0..1 normalizados; kbFx/kbCurve enteros)
+    float kbTime = 0.43f;      // en modo sync: posicion 0..1 del selector de division
+    float kbFeedback = 0.35f;
+    float kbWidth = 0.90f;
+    float kbMix = 0.30f;
+    float kbAmount = 0.55f;
+    int kbFx = 0;              // 0=filter 1=drive 2=crush 3=chorus
+    int kbCurve = 1;
+    int kbSyncMode = 1;         // 1 = sync (1/4..), 0 = free (ms)
+    float kbTimeMs = 250.0f;    // en modo free: time en ms (30..2000)
+    // Koboss Delay v2: ping-pong toggle + 2 params por efecto (sustituyen width/amount/curve)
+    int kbPingpong = 1;         // 1 = ping-pong cruzado, 0 = estereo normal
+    // params POR efecto (filter/drive/crush/chorus) — cada efecto recuerda los suyos
+    float kbFxA[4] = { 0.4f, 0.4f, 0.5f, 0.45f };
+    float kbFxB[4] = { 0.3f, 0.4f, 0.4f, 0.4f };
+    float kbOut = 0.8f;        // salida: 0..1 -> dB (-24..+6), 0.8 = 0 dB
+    int   kbFreeze = 0;        // 1 = congelar buffer (feedback infinito + sin entrada)
+    float kbDuck = 0.0f;       // 0..1 = cantidad de sidechain del wet bajo la señal seca
+    // Koboss Delay audio tap (lock-free, escrito en processBlock, leido por la GUI)
+    std::atomic<float> kobossDelayDryR { 0.0f };
+    std::atomic<float> kobossDelayWL { 0.0f };
+    std::atomic<float> kobossDelayWR { 0.0f };
+    std::atomic<float> kobossDelayOutPeak { 0.0f };  // pico |out| del último bloque (meter/clip)
+    std::atomic<float> kbHostBpm { 0.0f };  // BPM del host (0 = no disponible)
     PluginProcessor();'''
         if _state_needle in _php and "kobossActivePreset" not in _php:
             _php = _php.replace(_state_needle, _state_new, 1)
-            _processor_h.write_text(_php, encoding='utf-8')
             print("Koboss patch: added persistent state to PluginProcessor")
+        if "#include <atomic>" not in _php:
+            if "#pragma once" in _php:
+                _php = _php.replace("#pragma once", "#pragma once\n#include <atomic>", 1)
+            else:
+                _php = "#include <atomic>\n" + _php
+            print("Koboss patch: included <atomic> in PluginProcessor.h")
+        _processor_h.write_text(_php, encoding='utf-8')
 
     # 7. Make nvgSurface cover the FULL editor (no 40px gap reserved for plugdata toolbar)
     _editor_cpp = Path("plugdata/Source/PluginEditor.cpp")
     if _editor_cpp.exists():
         _ecpp = _editor_cpp.read_text(encoding='utf-8')
+        _ec_changed = False
         _bounds_needle = 'nvgSurface.updateBounds(getLocalBounds().withTrimmedTop(pluginMode->isWindowFullscreen() ? 0 : 40));'
         _bounds_new = 'nvgSurface.updateBounds(getLocalBounds()); // Koboss: full editor, no toolbar gap'
         if _bounds_needle in _ecpp and "Koboss: full editor" not in _ecpp:
             _ecpp = _ecpp.replace(_bounds_needle, _bounds_new, 1)
-            _editor_cpp.write_text(_ecpp, encoding='utf-8')
+            _ec_changed = True
             print("Koboss patch: nvgSurface covers full editor (no toolbar gap)")
 
-    # 8. Ensure Fonts.h is included (used elsewhere too — keep for safety)
+        # NO robar el foco del teclado para koboss (que el host reciba MIDI/teclas).
+        # broughtToFront() se dispara AL CLICAR el plugin -> era lo que robaba el foco.
+        _bf_needle = '''void PluginEditor::broughtToFront()
+{
+    if (isShowing() || isOnDesktop())
+        grabKeyboardFocus();'''
+        _bf_new = '''void PluginEditor::broughtToFront()
+{
+    if (pluginMode && pluginMode->isKoboss()) return; // Koboss: no robar foco al host
+    if (isShowing() || isOnDesktop())
+        grabKeyboardFocus();'''
+        if _bf_needle in _ecpp and "Koboss: no robar foco al host" not in _ecpp:
+            _ecpp = _ecpp.replace(_bf_needle, _bf_new, 1)
+            _ec_changed = True
+            print("Koboss patch: broughtToFront no roba el foco")
+
+        _ph_needle = '''void PluginEditor::parentHierarchyChanged()
+{
+    if (isShowing() || isOnDesktop())
+        grabKeyboardFocus();
+}'''
+        _ph_new = '''void PluginEditor::parentHierarchyChanged()
+{
+    if (pluginMode && pluginMode->isKoboss()) return; // Koboss: no robar foco
+    if (isShowing() || isOnDesktop())
+        grabKeyboardFocus();
+}'''
+        if _ph_needle in _ecpp and "Koboss: no robar foco" not in _ph_needle and _ph_new not in _ecpp:
+            _ecpp = _ecpp.replace(_ph_needle, _ph_new, 1)
+            _ec_changed = True
+            print("Koboss patch: parentHierarchyChanged no roba el foco")
+
+        # timer de arranque (Linux/Logic) que agarra el foco
+        _tf_needle = '''        if (auto* window = _this->getTopLevelComponent()) {
+            window->toFront(false);
+        }
+        _this->grabKeyboardFocus();'''
+        _tf_new = '''        if (auto* window = _this->getTopLevelComponent()) {
+            window->toFront(false);
+        }
+        if (!(_this->pluginMode && _this->pluginMode->isKoboss()))
+            _this->grabKeyboardFocus();'''
+        if _tf_needle in _ecpp and "_this->pluginMode && _this->pluginMode->isKoboss()" not in _ecpp:
+            _ecpp = _ecpp.replace(_tf_needle, _tf_new, 1)
+            _ec_changed = True
+            print("Koboss patch: timer de arranque no roba el foco")
+
+        if _ec_changed:
+            _editor_cpp.write_text(_ecpp, encoding='utf-8')
+
+    # 8. Ensure required headers are included in PluginMode.h
+    _src = _plugin_mode_h.read_text(encoding='utf-8')
+    _hdr_changed = False
     if '#include "Utility/Fonts.h"' not in _src:
-        _src = _plugin_mode_h.read_text(encoding='utf-8')
         _src = _src.replace('#include "PluginEditor.h"',
                             '#include "PluginEditor.h"\n#include "Utility/Fonts.h"',
                             1)
-        _plugin_mode_h.write_text(_src, encoding='utf-8')
+        _hdr_changed = True
         print("Koboss patch: included Fonts.h in PluginMode.h")
+    if '#include <vector>' not in _src:
+        _src = _src.replace('#include "PluginEditor.h"',
+                            '#include "PluginEditor.h"\n#include <vector>\n#include <algorithm>\n#include <cmath>\n#include <cstdio>',
+                            1)
+        _hdr_changed = True
+        print("Koboss patch: included STL headers in PluginMode.h")
+    if _hdr_changed:
+        _plugin_mode_h.write_text(_src, encoding='utf-8')
 
 system = platform.system()
 if system == "Windows":
