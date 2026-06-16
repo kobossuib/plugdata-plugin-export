@@ -557,7 +557,11 @@ if _plugin_mode_h.exists():
 
     '''
         # Inyectar el bloque del Koboss Delay (render iso + controles + handlers)
-        _delay_path = Path("../render-koboss-delay.cpp")
+        # Buscar primero dentro del repo (necesario para el CI, que solo clona este repo);
+        # fallback al directorio padre para builds locales.
+        _delay_path = Path("render-koboss-delay.cpp")
+        if not _delay_path.exists():
+            _delay_path = Path("../render-koboss-delay.cpp")
         if _delay_path.exists():
             _delay_block = _delay_path.read_text(encoding='utf-8')
             _dm = "// KBDELAY-BLOCK-START"
