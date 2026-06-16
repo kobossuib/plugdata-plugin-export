@@ -1,12 +1,17 @@
 [
   {
-    "name": "Koboss Chorus",
+    "name": "Koboss Delay",
     "author": "Koboss",
-    "path": "Plugins/chorus.zip",
-    "patch": "chorus.pd",
-    "formats": ["VST3", "AU"],
+    "path": "Plugins/koboss-delay.zip",
+    "patch": "koboss-delay.pd",
+    "formats": [
+      "VST3",
+      "AU",
+      "CLAP",
+      "LV2"
+    ],
     "type": "fx",
-    "version": "0.2.0",
+    "version": "0.5.0",
     "enable_gem": false,
     "enable_sfizz": false,
     "enable_ffmpeg": false
