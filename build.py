@@ -652,7 +652,7 @@ if _plugin_mode_h.exists():
         kbAmount = istream.readFloat();
         kbFx = istream.readInt();
         kbCurve = istream.readInt();
-        if (_kbssMagic == "KBS3" || _kbssMagic == "KBS4" || _kbssMagic == "KBS5" || _kbssMagic == "KBS6" || _kbssMagic == "KBS7") {
+        if (_kbssMagic == "KBS3" || _kbssMagic == "KBS4" || _kbssMagic == "KBS5" || _kbssMagic == "KBS6" || _kbssMagic == "KBS7" || _kbssMagic == "KBS8") {
             kbSyncMode = istream.readInt();
             kbTimeMs = istream.readFloat();
         }
@@ -874,6 +874,87 @@ if _plugin_mode_h.exists():
         if _sp_needle in _pcpp and "Koboss: sync GUI knob" not in _pcpp:
             _pcpp = _pcpp.replace(_sp_needle, _sp_new, 1)
             print("Koboss patch: sendParameters sync GUI knobs desde automatizacion")
+
+        # 6a4. FIX DUPLICADO: al duplicar una instancia con un patch grande (Delay),
+        # el mensaje loadbang->pluginmode llega antes de que el canvas este listo;
+        # el handler original solo entraba en plugin mode si getCurrentCanvas() != null
+        # y, si no, DESCARTABA el mensaje -> la 2a instancia caia al editor de plugdata.
+        # Fix: si hay editor pero el canvas aun no esta listo, usar el flag diferido
+        # patches[0]->openInPluginMode (mismo mecanismo que la rama "sin editor")
+        # para que entre en plugin mode cuando el canvas termine de construirse.
+        _pm_needle = '''                if (!editors.empty()) {
+                    auto* editor = editors[0];
+                    if (auto* cnv = editor->getCurrentCanvas()) {
+                        if (pluginModeFloatArgument)
+                            editor->getTabComponent().openInPluginMode(cnv->patch);
+                        else if (editor->isInPluginMode())
+                            editor->pluginMode->closePluginMode();
+                    }
+                } else {
+                    if (pluginModeFloatArgument)
+                        patches[0]->openInPluginMode = true;
+                    else
+                        patches[0]->openInPluginMode = false;
+                }'''
+        _pm_new = '''                // Koboss fix duplicado: defer si el canvas aun no esta listo
+                Canvas* kobossReadyCnv = nullptr;
+                if (!editors.empty())
+                    kobossReadyCnv = editors[0]->getCurrentCanvas();
+                if (kobossReadyCnv) {
+                    auto* editor = editors[0];
+                    if (pluginModeFloatArgument)
+                        editor->getTabComponent().openInPluginMode(kobossReadyCnv->patch);
+                    else if (editor->isInPluginMode())
+                        editor->pluginMode->closePluginMode();
+                } else {
+                    if (pluginModeFloatArgument)
+                        patches[0]->openInPluginMode = true;
+                    else
+                        patches[0]->openInPluginMode = false;
+                }'''
+        if _pm_needle in _pcpp and "Koboss fix duplicado" not in _pcpp:
+            _pcpp = _pcpp.replace(_pm_needle, _pm_new, 1)
+            print("Koboss patch: fix duplicado (defer pluginmode si canvas no listo)")
+
+        # 6a5. FIX DUPLICADO (primario): forzar plugin mode al cargar el patch del
+        # plugin exportado, ANTES de construir el tab (loadPatch lee initialiseIntoPluginmode
+        # y pone openInPluginMode=true -> TabComponent lo consume al crear el canvas).
+        # Garantiza que TODA instancia (incl. duplicada) abra la GUI custom.
+        _ctorload_needle = '''    auto patchFile = ProjectInfo::versionDataDir.getChildFile(JUCE_STRINGIFY(PROJECT_NAME)).getChildFile(JUCE_STRINGIFY(PATCH_NAME));
+    loadPatch(URL(patchFile));'''
+        _ctorload_new = '''    auto patchFile = ProjectInfo::versionDataDir.getChildFile(JUCE_STRINGIFY(PROJECT_NAME)).getChildFile(JUCE_STRINGIFY(PATCH_NAME));
+    // Koboss fix duplicado: forzar plugin mode al cargar el patch del plugin
+    initialiseIntoPluginmode = true;
+    loadPatch(URL(patchFile));'''
+        if _ctorload_needle in _pcpp and "Koboss fix duplicado: forzar plugin mode al cargar" not in _pcpp:
+            _pcpp = _pcpp.replace(_ctorload_needle, _ctorload_new, 1)
+            print("Koboss patch: fix duplicado (forzar pluginmode al cargar patch)")
+
+        # 6a6. FIX DUPLICADO (DEFINITIVO): el bug real estaba en setStateInformation.
+        # Al duplicar, Ableton hace getStateInformation(original) -> setStateInformation(copia).
+        # setStateInformation hace patches.clear() (tira el patch del constructor) y recarga
+        # leyendo el flag "PluginMode" del estado guardado. En el Delay ese flag se grababa
+        # false/inconsistente -> la copia abria el editor de plugdata.
+        # A) getStateInformation: grabar siempre PluginMode=true para el plugin exportado.
+        _stA_needle = '        patchTree->setAttribute("PluginMode", patch->openInPluginMode);'
+        _stA_new = ('#ifdef CUSTOM_PLUGIN\n'
+                    '        patchTree->setAttribute("PluginMode", true); // Koboss fix duplicado A\n'
+                    '#else\n'
+                    '        patchTree->setAttribute("PluginMode", patch->openInPluginMode);\n'
+                    '#endif')
+        if _stA_needle in _pcpp and "Koboss fix duplicado A" not in _pcpp:
+            _pcpp = _pcpp.replace(_stA_needle, _stA_new, 1)
+            print("Koboss patch: fix duplicado A (getStateInformation PluginMode=true)")
+        # B) setStateInformation: al recargar, forzar pluginMode=true (gana sobre el atributo).
+        _stB_needle = '                auto const pluginMode = p->getBoolAttribute("PluginMode");'
+        _stB_new = ('#ifdef CUSTOM_PLUGIN\n'
+                    '                auto const pluginMode = true; // Koboss fix duplicado B\n'
+                    '#else\n'
+                    '                auto const pluginMode = p->getBoolAttribute("PluginMode");\n'
+                    '#endif')
+        if _stB_needle in _pcpp and "Koboss fix duplicado B" not in _pcpp:
+            _pcpp = _pcpp.replace(_stB_needle, _stB_new, 1)
+            print("Koboss patch: fix duplicado B (setStateInformation forzar pluginMode)")
 
         _proc_cpp.write_text(_pcpp, encoding='utf-8')
 
