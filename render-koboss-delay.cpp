@@ -667,6 +667,16 @@ void renderKobossDelay(NVGcontext* nvg) {
     {
         auto ip = editor->pd;
 
+        if (ip->kbForceResend) {
+            // Restauracion de estado (p.ej. duplicar pista): los last* son globales de proceso y
+            // pueden coincidir con el valor de otra instancia -> forzar re-envio poniendolos a sentinel.
+            kobossDelayLastSentMs = -1.0f;
+            kobossDelayLastFb = kobossDelayLastMix = kobossDelayLastOut = kobossDelayLastDuck = -999.0f;
+            kobossDelayLastPp = kobossDelayLastFreeze = -999;
+            for (int _i = 0; _i < 4; ++_i) { kbLastFa[_i] = kbLastFb[_i] = kbLastFm[_i] = -999.0f; kbLastSlot[_i] = -999; }
+            ip->kbForceResend = false;
+        }
+
         // feedback con CURVA media: 30% = pocos golpes, 50% = unos cuantos, 100% = cola
         // larga (sin swell infinito). pow(.,0.7)*90 -> patch /100, min 0.95.
         float fbSend = std::pow(ip->kbFeedback, 0.7f) * 90.0f;

@@ -721,6 +721,7 @@ if _plugin_mode_h.exists():
         sendFloat("duck-set", kbDuck);
         sendFloat("freeze-set", 0.0f);
         if (kbSyncMode == 0) sendFloat("time", kbTimeMs);
+        kbForceResend = true;   // Koboss fix duplicado: que render() reenvie todo a ESTA instancia
     }
 
     delete[] xmlData;'''
@@ -1014,6 +1015,7 @@ public:
     float kbOut = 0.8f;        // salida: 0..1 -> dB (-24..+6), 0.8 = 0 dB
     int   kbFreeze = 0;        // 1 = congelar buffer (feedback infinito + sin entrada)
     float kbDuck = 0.0f;       // 0..1 = cantidad de sidechain del wet bajo la señal seca
+    bool  kbForceResend = false;   // Koboss fix duplicado: fuerza re-push del estado al pd tras restaurar (los last* de render son globales de proceso)
     // Koboss Delay audio tap (lock-free, escrito en processBlock, leido por la GUI)
     std::atomic<float> kobossDelayDryR { 0.0f };
     std::atomic<float> kobossDelayWL { 0.0f };
